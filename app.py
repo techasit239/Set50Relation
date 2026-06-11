@@ -1,0 +1,422 @@
+from __future__ import annotations
+
+import math
+import re
+import time
+from pathlib import Path
+from typing import Iterable
+
+import networkx as nx
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import sync_playwright
+
+SET50_URL = "https://www.set.or.th/th/market/index/set50/overview"
+SHAREHOLDER_URL = "https://www.set.or.th/th/market/product/stock/quote/{symbol}/major-shareholders"
+CACHE_DIR = Path("work") / "cache"
+RAW_CACHE = CACHE_DIR / "set50_shareholders.csv"
+META_CACHE = CACHE_DIR / "set50_shareholders_meta.csv"
+
+NOMINEE_PATTERNS = [
+    r"NVDR",
+    r"NOMINEE",
+    r"DEPOSITOR",
+    r"STATE STREET",
+    r"CITIBANK",
+    r"HSBC",
+    r"BNP PARIBAS",
+    r"DBS",
+    r"JPMORGAN",
+    r"BANK OF NEW YORK",
+    r"THAILAND SECURITIES DEPOSITORY",
+    r"ศูนย์รับฝากหลักทรัพย์",
+    r"ไทยเอ็นวีดีอาร์",
+]
+
+
+def ensure_cache_dir() -> None:
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def normalize_shareholder_name(name: str) -> str:
+    cleaned = (name or "").strip().upper()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    cleaned = cleaned.replace("&AMP;", "&")
+    cleaned = cleaned.replace("PUBLIC COMPANY LIMITED", "PCL")
+    cleaned = cleaned.replace("PUBLIC CO., LTD.", "PCL")
+    cleaned = cleaned.replace("CO., LTD.", "CO LTD")
+    cleaned = cleaned.replace("CO. LTD.", "CO LTD")
+    return cleaned.strip(" .")
+
+
+def is_nominee_holder(name: str) -> bool:
+    upper_name = normalize_shareholder_name(name)
+    return any(re.search(pattern, upper_name) for pattern in NOMINEE_PATTERNS)
+
+
+def parse_number(value: str) -> float:
+    value = (value or "").replace(",", "").strip()
+    return float(value) if value else 0.0
+
+
+def scrape_set50_symbols(page) -> list[str]:
+    page.goto(SET50_URL, wait_until="domcontentloaded", timeout=120000)
+    page.wait_for_timeout(5000)
+    page.wait_for_function(
+        "() => document.querySelectorAll('table tbody tr td:first-child a').length >= 50",
+        timeout=120000,
+    )
+    symbols = page.eval_on_selector_all(
+        "table tbody tr td:first-child a",
+        "nodes => nodes.map(node => node.textContent.trim())",
+    )
+    deduped: list[str] = []
+    seen = set()
+    for symbol in symbols:
+        symbol = symbol.strip().upper()
+        if symbol and symbol not in seen:
+            deduped.append(symbol)
+            seen.add(symbol)
+    return deduped[:50]
+
+
+def scrape_major_shareholders(page, symbol: str) -> tuple[list[dict], dict]:
+    url = SHAREHOLDER_URL.format(symbol=symbol)
+    page.goto(url, wait_until="domcontentloaded", timeout=120000)
+    page.wait_for_timeout(4000)
+    try:
+        page.wait_for_function(
+            """
+            () => {
+                const rows = Array.from(document.querySelectorAll('[role="tabpanel"] table tbody tr'));
+                return rows.some(row => row.querySelectorAll('td').length >= 4);
+            }
+            """,
+            timeout=120000,
+        )
+    except PlaywrightTimeoutError as exc:
+        raise RuntimeError(f"Timed out while reading shareholder table for {symbol}") from exc
+
+    overview_text = page.eval_on_selector('[role="tabpanel"]', "node => node.innerText")
+    rows = page.eval_on_selector_all(
+        '[role="tabpanel"] table tbody tr',
+        """
+        nodes => nodes
+            .map(row => Array.from(row.querySelectorAll('td')).map(td => td.innerText.trim()))
+            .filter(cols => cols.length >= 4)
+        """,
+    )
+
+    match = re.search(r"ณ วันที่\s+(.*?)\s+ประเภท", overview_text)
+    as_of_date = match.group(1).strip() if match else ""
+    records: list[dict] = []
+    for cols in rows:
+        rank, shareholder_name, shares, pct = cols[:4]
+        records.append(
+            {
+                "symbol": symbol,
+                "rank": int(parse_number(rank)),
+                "shareholder_name": shareholder_name,
+                "shareholder_clean": normalize_shareholder_name(shareholder_name),
+                "shares": parse_number(shares),
+                "holding_pct": parse_number(pct),
+                "is_nominee": is_nominee_holder(shareholder_name),
+                "source_url": url,
+                "as_of_date": as_of_date,
+            }
+        )
+    meta = {"symbol": symbol, "as_of_date": as_of_date, "source_url": url}
+    return records, meta
+
+
+def refresh_data(limit: int | None = None, sleep_seconds: float = 1.0) -> tuple[pd.DataFrame, pd.DataFrame]:
+    ensure_cache_dir()
+    all_rows: list[dict] = []
+    meta_rows: list[dict] = []
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        symbols = scrape_set50_symbols(page)
+        if limit:
+            symbols = symbols[:limit]
+
+        for symbol in symbols:
+            records, meta = scrape_major_shareholders(page, symbol)
+            all_rows.extend(records)
+            meta_rows.append(meta)
+            time.sleep(sleep_seconds)
+        browser.close()
+
+    df = pd.DataFrame(all_rows)
+    meta_df = pd.DataFrame(meta_rows)
+    df.to_csv(RAW_CACHE, index=False, encoding="utf-8-sig")
+    meta_df.to_csv(META_CACHE, index=False, encoding="utf-8-sig")
+    return df, meta_df
+
+
+def load_cached_data() -> tuple[pd.DataFrame, pd.DataFrame]:
+    if not RAW_CACHE.exists():
+        return pd.DataFrame(), pd.DataFrame()
+    df = pd.read_csv(RAW_CACHE)
+    meta_df = pd.read_csv(META_CACHE) if META_CACHE.exists() else pd.DataFrame()
+    return df, meta_df
+
+
+def build_bipartite_graph(df: pd.DataFrame) -> nx.Graph:
+    graph = nx.Graph()
+    for symbol in sorted(df["symbol"].unique()):
+        graph.add_node(f"company::{symbol}", label=symbol, node_type="company")
+    for holder in sorted(df["shareholder_clean"].unique()):
+        display_name = (
+            df.loc[df["shareholder_clean"] == holder, "shareholder_name"].value_counts().idxmax()
+        )
+        graph.add_node(f"holder::{holder}", label=display_name, node_type="shareholder")
+    for row in df.itertuples(index=False):
+        graph.add_edge(
+            f"holder::{row.shareholder_clean}",
+            f"company::{row.symbol}",
+            weight=float(row.holding_pct),
+            shares=float(row.shares),
+        )
+    return graph
+
+
+def compute_holder_metrics(df: pd.DataFrame) -> pd.DataFrame:
+    name_map = (
+        df.groupby("shareholder_clean")["shareholder_name"]
+        .agg(lambda series: series.value_counts().idxmax())
+        .rename("shareholder_name")
+    )
+    summary = (
+        df.groupby("shareholder_clean", as_index=False)
+        .agg(
+            company_count=("symbol", "nunique"),
+            total_edges=("symbol", "count"),
+            total_holding_pct=("holding_pct", "sum"),
+            total_shares=("shares", "sum"),
+        )
+        .merge(name_map, on="shareholder_clean", how="left")
+        .sort_values(["company_count", "total_holding_pct"], ascending=[False, False])
+    )
+    return summary[
+        [
+            "shareholder_clean",
+            "shareholder_name",
+            "company_count",
+            "total_edges",
+            "total_holding_pct",
+            "total_shares",
+        ]
+    ]
+
+
+def compute_company_projection(df: pd.DataFrame) -> pd.DataFrame:
+    pairs = df.merge(df, on="shareholder_clean", suffixes=("_left", "_right"))
+    pairs = pairs[pairs["symbol_left"] < pairs["symbol_right"]].copy()
+    if pairs.empty:
+        return pairs
+    pairs["pair_strength"] = pairs[["holding_pct_left", "holding_pct_right"]].min(axis=1)
+    projected = (
+        pairs.groupby(["symbol_left", "symbol_right"], as_index=False)
+        .agg(
+            shared_holders=("shareholder_clean", "nunique"),
+            min_shared_pct=("pair_strength", "min"),
+            mean_shared_pct=("pair_strength", "mean"),
+        )
+        .sort_values(["shared_holders", "mean_shared_pct"], ascending=[False, False])
+    )
+    return projected
+
+
+def make_network_figure(graph: nx.Graph, max_nodes: int = 140) -> go.Figure:
+    if graph.number_of_nodes() == 0:
+        return go.Figure()
+
+    if graph.number_of_nodes() > max_nodes:
+        company_nodes = [n for n, d in graph.nodes(data=True) if d["node_type"] == "company"]
+        holder_nodes = [n for n, d in graph.nodes(data=True) if d["node_type"] == "shareholder"]
+        holder_nodes = sorted(holder_nodes, key=lambda n: graph.degree(n), reverse=True)
+        keep = set(company_nodes) | set(holder_nodes[: max_nodes - len(company_nodes)])
+        graph = graph.subgraph(keep).copy()
+
+    pos = nx.spring_layout(graph, seed=42, k=1.2 / math.sqrt(max(graph.number_of_nodes(), 2)))
+
+    edge_x: list[float] = []
+    edge_y: list[float] = []
+    for left, right in graph.edges():
+        x0, y0 = pos[left]
+        x1, y1 = pos[right]
+        edge_x.extend([x0, x1, None])
+        edge_y.extend([y0, y1, None])
+
+    edge_trace = go.Scatter(
+        x=edge_x,
+        y=edge_y,
+        mode="lines",
+        line=dict(width=0.7, color="#9aa5b1"),
+        hoverinfo="skip",
+    )
+
+    node_x: list[float] = []
+    node_y: list[float] = []
+    node_text: list[str] = []
+    node_size: list[float] = []
+    node_color: list[str] = []
+
+    for node, attrs in graph.nodes(data=True):
+        x, y = pos[node]
+        degree = graph.degree(node)
+        label = attrs["label"]
+        node_x.append(x)
+        node_y.append(y)
+        node_size.append(16 + degree * 3)
+        node_text.append(f"{label}<br>type={attrs['node_type']}<br>degree={degree}")
+        node_color.append("#0f766e" if attrs["node_type"] == "company" else "#c2410c")
+
+    node_trace = go.Scatter(
+        x=node_x,
+        y=node_y,
+        mode="markers",
+        marker=dict(size=node_size, color=node_color, line=dict(width=1, color="white")),
+        text=node_text,
+        hovertemplate="%{text}<extra></extra>",
+    )
+
+    figure = go.Figure(data=[edge_trace, node_trace])
+    figure.update_layout(
+        margin=dict(l=10, r=10, t=10, b=10),
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        height=720,
+    )
+    return figure
+
+
+def filter_dataframe(
+    df: pd.DataFrame,
+    min_pct: float,
+    selected_companies: Iterable[str],
+    exclude_nominees: bool,
+    only_cross_holders: bool,
+) -> pd.DataFrame:
+    filtered = df[df["holding_pct"] >= min_pct].copy()
+    if selected_companies:
+        filtered = filtered[filtered["symbol"].isin(selected_companies)]
+    if exclude_nominees:
+        filtered = filtered[~filtered["is_nominee"]]
+    if only_cross_holders and not filtered.empty:
+        counts = filtered.groupby("shareholder_clean")["symbol"].nunique()
+        keep_holders = counts[counts > 1].index
+        filtered = filtered[filtered["shareholder_clean"].isin(keep_holders)]
+    return filtered
+
+
+def render_sidebar(df: pd.DataFrame) -> dict:
+    companies = sorted(df["symbol"].dropna().unique().tolist()) if not df.empty else []
+    with st.sidebar:
+        st.header("Filters")
+        min_pct = st.slider("Min holding %", 0.0, 20.0, 0.5, 0.1)
+        selected_companies = st.multiselect("Companies", companies, default=companies)
+        exclude_nominees = st.toggle("Hide nominee / NVDR holders", value=False)
+        only_cross_holders = st.toggle("Show only holders linked to >1 company", value=True)
+        force_refresh = st.button("Refresh from SET", type="primary")
+        sample_limit = st.number_input(
+            "Refresh limit (for quick test)",
+            min_value=5,
+            max_value=50,
+            value=50,
+            step=5,
+        )
+    return {
+        "min_pct": min_pct,
+        "selected_companies": selected_companies,
+        "exclude_nominees": exclude_nominees,
+        "only_cross_holders": only_cross_holders,
+        "force_refresh": force_refresh,
+        "sample_limit": sample_limit,
+    }
+
+
+def main() -> None:
+    st.set_page_config(page_title="SET50 Shareholder Network", layout="wide")
+    st.title("SET50 Shareholder Network Analysis")
+    st.caption(
+        "ดึงข้อมูลผู้ถือหุ้นรายใหญ่จากเว็บไซต์ SET แล้วสร้าง Social Network Analysis ระหว่างผู้ถือหุ้นและบริษัทใน SET50"
+    )
+
+    ensure_cache_dir()
+    cached_df, meta_df = load_cached_data()
+    controls = render_sidebar(cached_df)
+
+    if controls["force_refresh"] or cached_df.empty:
+        with st.spinner("Scraping SET50 constituents and major shareholders from SET..."):
+            cached_df, meta_df = refresh_data(limit=int(controls["sample_limit"]))
+
+    if cached_df.empty:
+        st.warning("ยังไม่มีข้อมูล กรุณากด Refresh from SET")
+        return
+
+    filtered_df = filter_dataframe(
+        cached_df,
+        min_pct=controls["min_pct"],
+        selected_companies=controls["selected_companies"],
+        exclude_nominees=controls["exclude_nominees"],
+        only_cross_holders=controls["only_cross_holders"],
+    )
+
+    if filtered_df.empty:
+        st.warning("ไม่พบข้อมูลตาม filter ที่เลือก")
+        return
+
+    graph = build_bipartite_graph(filtered_df)
+    holder_metrics = compute_holder_metrics(filtered_df)
+    company_projection = compute_company_projection(filtered_df)
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Companies", filtered_df["symbol"].nunique())
+    col2.metric("Unique holders", filtered_df["shareholder_clean"].nunique())
+    col3.metric("Edges", len(filtered_df))
+    col4.metric("Components", nx.number_connected_components(graph))
+
+    if not meta_df.empty:
+        st.caption(
+            "Latest cached shareholder dates: "
+            + ", ".join(
+                f"{row.symbol} ({row.as_of_date})" for row in meta_df.head(8).itertuples(index=False)
+            )
+            + (" ..." if len(meta_df) > 8 else "")
+        )
+
+    st.subheader("Bipartite Network")
+    st.plotly_chart(make_network_figure(graph), use_container_width=True)
+
+    left, right = st.columns(2)
+    with left:
+        st.subheader("Top Cross-holders")
+        st.dataframe(holder_metrics.head(30), use_container_width=True, hide_index=True)
+    with right:
+        st.subheader("Company Overlap")
+        if company_projection.empty:
+            st.info("ไม่มี company pair ที่แชร์ผู้ถือหุ้นภายใต้ filter นี้")
+        else:
+            st.dataframe(company_projection.head(30), use_container_width=True, hide_index=True)
+
+    st.subheader("Raw Edges")
+    st.dataframe(
+        filtered_df.sort_values(["shareholder_clean", "holding_pct"], ascending=[True, False]),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.info(
+        "ข้อควรระวัง: ความสัมพันธ์ที่เห็นเป็นความสัมพันธ์ตามรายชื่อผู้ถือหุ้นรายใหญ่ที่เปิดเผยบน SET "
+        "ซึ่งอาจรวม nominee, custodian, NVDR และยังไม่ใช่ ultimate beneficial ownership"
+    )
+
+
+if __name__ == "__main__":
+    main()
