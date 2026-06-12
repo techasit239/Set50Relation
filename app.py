@@ -237,7 +237,7 @@ def compute_company_projection(df: pd.DataFrame) -> pd.DataFrame:
     return projected
 
 
-def make_network_figure_3d(
+def make_network_figure_2d(
     graph: nx.Graph,
     max_nodes: int = 140,
     show_labels: bool = True,
@@ -254,48 +254,36 @@ def make_network_figure_3d(
         keep = set(company_nodes) | set(holder_nodes[: max_nodes - len(company_nodes)])
         graph = graph.subgraph(keep).copy()
 
-    pos = nx.spring_layout(
-        graph,
-        dim=3,
-        seed=42,
-        k=2.6 / math.sqrt(max(graph.number_of_nodes(), 2)),
-        iterations=300,
-    )
+    pos = nx.spring_layout(graph, dim=2, seed=42, k=3.2 / math.sqrt(max(graph.number_of_nodes(), 2)), iterations=400)
 
     edge_x: list[float] = []
     edge_y: list[float] = []
-    edge_z: list[float] = []
     for left, right in graph.edges():
-        x0, y0, z0 = pos[left]
-        x1, y1, z1 = pos[right]
+        x0, y0 = pos[left]
+        x1, y1 = pos[right]
         edge_x.extend([x0, x1, None])
         edge_y.extend([y0, y1, None])
-        edge_z.extend([z0, z1, None])
 
     highlighted_neighbors: set[str] = set()
     if focus_node and focus_node in graph:
         highlighted_neighbors = set(graph.neighbors(focus_node))
 
-    edge_traces: list[go.Scatter3d] = []
+    edge_traces: list[go.Scatter] = []
     if focus_node and focus_node in graph:
         dim_x: list[float] = []
         dim_y: list[float] = []
-        dim_z: list[float] = []
         hi_x: list[float] = []
         hi_y: list[float] = []
-        hi_z: list[float] = []
         for left, right in graph.edges():
-            x0, y0, z0 = pos[left]
-            x1, y1, z1 = pos[right]
+            x0, y0 = pos[left]
+            x1, y1 = pos[right]
             target = hi_x if focus_node in {left, right} else dim_x
             target.extend([x0, x1, None])
             (hi_y if focus_node in {left, right} else dim_y).extend([y0, y1, None])
-            (hi_z if focus_node in {left, right} else dim_z).extend([z0, z1, None])
         edge_traces.append(
-            go.Scatter3d(
+            go.Scatter(
                 x=dim_x,
                 y=dim_y,
-                z=dim_z,
                 mode="lines",
                 line=dict(width=0.6, color="rgba(156,163,175,0.18)"),
                 hoverinfo="skip",
@@ -303,10 +291,9 @@ def make_network_figure_3d(
             )
         )
         edge_traces.append(
-            go.Scatter3d(
+            go.Scatter(
                 x=hi_x,
                 y=hi_y,
-                z=hi_z,
                 mode="lines",
                 line=dict(width=4, color="#2563EB"),
                 hoverinfo="skip",
@@ -315,10 +302,9 @@ def make_network_figure_3d(
         )
     else:
         edge_traces.append(
-            go.Scatter3d(
+            go.Scatter(
                 x=edge_x,
                 y=edge_y,
-                z=edge_z,
                 mode="lines",
                 line=dict(width=0.7, color="#9AA5B1"),
                 hoverinfo="skip",
@@ -328,7 +314,6 @@ def make_network_figure_3d(
 
     node_x: list[float] = []
     node_y: list[float] = []
-    node_z: list[float] = []
     node_text: list[str] = []
     node_size: list[float] = []
     node_color: list[str] = []
@@ -342,12 +327,11 @@ def make_network_figure_3d(
     labeled_holders = set(holder_rank[:max_holder_labels])
 
     for node, attrs in graph.nodes(data=True):
-        x, y, z = pos[node]
+        x, y = pos[node]
         degree = graph.degree(node)
         label = attrs["label"]
         node_x.append(x)
         node_y.append(y)
-        node_z.append(z)
         node_size.append(16 + degree * 3)
         node_text.append(f"{label}<br>type={attrs['node_type']}<br>degree={degree}")
         base_color = "#0F766E" if attrs["node_type"] == "company" else "#C2410C"
@@ -362,10 +346,9 @@ def make_network_figure_3d(
         should_label = attrs["node_type"] == "company" or node in labeled_holders
         node_label_text.append(label if show_labels and should_label else "")
 
-    node_trace = go.Scatter3d(
+    node_trace = go.Scatter(
         x=node_x,
         y=node_y,
-        z=node_z,
         mode="markers+text" if show_labels else "markers",
         marker=dict(
             size=node_size,
@@ -386,14 +369,9 @@ def make_network_figure_3d(
         margin=dict(l=10, r=10, t=10, b=10),
         paper_bgcolor="white",
         plot_bgcolor="white",
-        scene=dict(
-            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title=""),
-            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title=""),
-            zaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title=""),
-            camera=dict(eye=dict(x=1.9, y=1.9, z=1.35)),
-            aspectmode="cube",
-        ),
-        height=920,
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title=""),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title="", scaleanchor="x", scaleratio=1),
+        height=980,
         showlegend=False,
     )
     return figure
@@ -544,8 +522,8 @@ def main() -> None:
             + (" ..." if len(meta_df) > 8 else "")
         )
 
-    st.subheader("3D Bipartite Network")
-    st.caption("Drag to rotate, zoom in/out, and hover nodes to inspect relationships.")
+    st.subheader("2D Bipartite Network")
+    st.caption("Pan, zoom, and hover nodes to inspect relationships. The layout is spread out to reduce node overlap.")
     st.markdown(
         "`Green/Teal nodes` = listed companies in SET50, "
         "`Orange nodes` = shareholders, "
@@ -556,7 +534,7 @@ def main() -> None:
     if focus_node:
         st.caption(f"Focused shareholder: `{controls['focus_holder_name']}`")
     st.plotly_chart(
-        make_network_figure_3d(
+        make_network_figure_2d(
             graph,
             show_labels=controls["show_labels"],
             max_holder_labels=int(controls["max_holder_labels"]),
