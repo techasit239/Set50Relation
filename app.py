@@ -342,6 +342,7 @@ def make_network_figure_2d(
     node_size: list[float] = []
     node_color: list[str] = []
     node_label_text: list[str] = []
+    node_customdata: list[list[str]] = []
 
     holder_rank = sorted(
         [n for n, d in graph.nodes(data=True) if d["node_type"] == "shareholder"],
@@ -369,6 +370,7 @@ def make_network_figure_2d(
             node_color.append(rgba(base_color, 0.9))
         should_label = attrs["node_type"] == "company" or node in labeled_holders
         node_label_text.append(label if show_labels and should_label else "")
+        node_customdata.append([node, attrs["node_type"], label, str(degree)])
 
     node_trace = go.Scatter(
         x=node_x,
@@ -379,15 +381,19 @@ def make_network_figure_2d(
             color=node_color,
             line=dict(width=1, color="white"),
         ),
-        text=node_text,
-        hovertemplate="%{text}<extra></extra>",
+        text=node_label_text,
+        customdata=node_customdata,
+        hovertemplate=(
+            "<b>%{customdata[2]}</b><br>"
+            "type=%{customdata[1]}<br>"
+            "degree=%{customdata[3]}<extra></extra>"
+        ),
         textposition=[
             "middle left" if graph.nodes[node]["node_type"] == "company" else "middle right"
             for node in graph.nodes()
         ] if show_labels else None,
         textfont=dict(size=10, color="#1F2937"),
-        customdata=node_label_text,
-        texttemplate="%{customdata}",
+        texttemplate="%{text}",
         showlegend=False,
     )
 
@@ -410,6 +416,54 @@ def rgba(hex_color: str, alpha: float) -> str:
     green = int(hex_color[2:4], 16)
     blue = int(hex_color[4:6], 16)
     return f"rgba({red}, {green}, {blue}, {alpha})"
+
+
+def get_selected_node_id(event) -> str | None:
+    if not event:
+        return None
+    selection = event.get("selection") if hasattr(event, "get") else None
+    if not selection:
+        return None
+    points = selection.get("points", [])
+    if not points:
+        return None
+    customdata = points[-1].get("customdata")
+    if not customdata:
+        return None
+    return customdata[0]
+
+
+def render_focus_details(node_id: str | None, filtered_df: pd.DataFrame) -> None:
+    st.subheader("Selected Node Details")
+    if not node_id:
+        st.info("Click a node in the graph to inspect its relationships.")
+        return
+
+    node_type, raw_id = node_id.split("::", 1)
+    if node_type == "company":
+        company_df = filtered_df[filtered_df["symbol"] == raw_id].sort_values("holding_pct", ascending=False)
+        st.markdown(f"**Company:** `{raw_id}`")
+        st.write(
+            f"This company is connected to **{company_df['shareholder_clean'].nunique()}** shareholders "
+            f"under the current filters."
+        )
+        st.dataframe(company_df, use_container_width=True, hide_index=True)
+        return
+
+    holder_df = filtered_df[filtered_df["shareholder_clean"] == raw_id].sort_values("holding_pct", ascending=False)
+    holder_name = holder_df["shareholder_name"].value_counts().idxmax()
+    st.markdown(f"**Shareholder:** `{holder_name}`")
+    st.write(
+        f"This shareholder is connected to **{holder_df['symbol'].nunique()}** companies "
+        f"under the current filters."
+    )
+    st.dataframe(
+        holder_df[
+            ["symbol", "holding_pct", "shares", "as_of_date", "is_nominee", "source_url"]
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
 
 
 def filter_dataframe(
@@ -450,7 +504,8 @@ def render_sidebar(df: pd.DataFrame, can_refresh: bool) -> dict:
         st.header("Graph")
         show_labels = st.toggle("Show labels", value=True)
         max_holder_labels = st.slider("Top holder labels", 5, 40, 20, 1)
-        focus_holder_name = st.selectbox("Focus shareholder", ["None", *holder_options], index=0)
+        focus_holder_name = st.selectbox("Manual focus shareholder", ["None", *holder_options], index=0)
+        clear_selected_node = st.button("Clear clicked node")
         sample_limit = st.number_input(
             "Refresh limit (local only)",
             min_value=5,
@@ -470,6 +525,7 @@ def render_sidebar(df: pd.DataFrame, can_refresh: bool) -> dict:
         "show_labels": show_labels,
         "max_holder_labels": max_holder_labels,
         "focus_holder_name": focus_holder_name,
+        "clear_selected_node": clear_selected_node,
         "force_refresh": force_refresh,
         "sample_limit": sample_limit,
     }
@@ -483,9 +539,14 @@ def main() -> None:
     ensure_cache_dir()
     cloud_mode = is_running_on_streamlit_cloud()
     can_refresh = (not cloud_mode) and live_refresh_enabled()
+    if "selected_node_id" not in st.session_state:
+        st.session_state["selected_node_id"] = None
 
     cached_df, meta_df = load_cached_data()
     controls = render_sidebar(cached_df, can_refresh=can_refresh)
+
+    if controls["clear_selected_node"]:
+        st.session_state["selected_node_id"] = None
 
     if controls["force_refresh"]:
         with st.spinner("Scraping SET50 constituents and major shareholders from SET..."):
@@ -524,15 +585,17 @@ def main() -> None:
         ["total_shares", "total_holding_pct"], ascending=[False, False]
     )
 
-    focus_node = None
+    focus_node = st.session_state.get("selected_node_id")
     focused_holder_clean = None
-    if controls["focus_holder_name"] != "None":
+    if not focus_node and controls["focus_holder_name"] != "None":
         selected = holder_metrics.loc[
             holder_metrics["shareholder_name"] == controls["focus_holder_name"], "shareholder_clean"
         ]
         if not selected.empty:
             focused_holder_clean = selected.iloc[0]
             focus_node = f"holder::{focused_holder_clean}"
+    elif focus_node and focus_node.startswith("holder::"):
+        focused_holder_clean = focus_node.split("::", 1)[1]
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Companies", filtered_df["symbol"].nunique())
@@ -563,8 +626,17 @@ def main() -> None:
         "`Larger circles` = nodes with more connections."
     )
     if focus_node:
-        st.caption(f"Focused shareholder: `{controls['focus_holder_name']}`")
-    st.plotly_chart(
+        node_type, raw_id = focus_node.split("::", 1)
+        if node_type == "company":
+            st.caption(f"Focused company: `{raw_id}`")
+        else:
+            holder_name = (
+                filtered_df.loc[filtered_df["shareholder_clean"] == raw_id, "shareholder_name"]
+                .value_counts()
+                .idxmax()
+            )
+            st.caption(f"Focused shareholder: `{holder_name}`")
+    event = st.plotly_chart(
         make_network_figure_2d(
             graph,
             show_labels=controls["show_labels"],
@@ -572,7 +644,14 @@ def main() -> None:
             focus_node=focus_node,
         ),
         use_container_width=True,
+        key="network_chart",
+        on_select="rerun",
+        selection_mode=("points",),
     )
+    selected_node_id = get_selected_node_id(event)
+    if selected_node_id and selected_node_id != st.session_state.get("selected_node_id"):
+        st.session_state["selected_node_id"] = selected_node_id
+        st.rerun()
 
     left, right = st.columns(2)
     with left:
@@ -590,15 +669,7 @@ def main() -> None:
         else:
             st.dataframe(company_projection.head(30), use_container_width=True, hide_index=True)
     with right2:
-        if focus_node:
-            st.subheader("Focused Holder Links")
-            focused_edges = filtered_df[
-                filtered_df["shareholder_clean"] == focused_holder_clean
-            ].sort_values("holding_pct", ascending=False)
-            st.dataframe(focused_edges, use_container_width=True, hide_index=True)
-        else:
-            st.subheader("Focused Holder Links")
-            st.info("Select a shareholder in the sidebar to highlight its connections.")
+        render_focus_details(focus_node, filtered_df)
 
     st.subheader("Raw Edges")
     st.dataframe(
