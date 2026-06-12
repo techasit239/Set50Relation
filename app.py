@@ -257,7 +257,8 @@ def make_network_figure_3d(
         graph,
         dim=3,
         seed=42,
-        k=1.4 / math.sqrt(max(graph.number_of_nodes(), 2)),
+        k=2.6 / math.sqrt(max(graph.number_of_nodes(), 2)),
+        iterations=300,
     )
 
     edge_x: list[float] = []
@@ -332,9 +333,10 @@ def make_network_figure_3d(
             xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title=""),
             yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title=""),
             zaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title=""),
-            camera=dict(eye=dict(x=1.55, y=1.55, z=1.1)),
+            camera=dict(eye=dict(x=1.9, y=1.9, z=1.35)),
+            aspectmode="cube",
         ),
-        height=720,
+        height=920,
         showlegend=False,
     )
     return figure
@@ -456,6 +458,11 @@ def main() -> None:
 
     st.subheader("3D Bipartite Network")
     st.caption("Drag to rotate, zoom in/out, and hover nodes to inspect relationships.")
+    st.markdown(
+        "`Green/Teal nodes` = listed companies in SET50, "
+        "`Orange nodes` = shareholders, "
+        "`Gray lines` = shareholding relationships between a shareholder and a company."
+    )
     st.plotly_chart(
         make_network_figure_3d(
             graph,
@@ -486,7 +493,7 @@ def main() -> None:
     st.info(
         "Interpretation note: this graph is based on disclosed major shareholders on SET. "
         "It can include nominees, custodians, and NVDR holders, so it is not the same as "
-        "ultimate beneficial ownership."
+        "ultimate beneficial ownership. Larger circles indicate nodes with more connections."
     )
 
 
