@@ -237,7 +237,12 @@ def compute_company_projection(df: pd.DataFrame) -> pd.DataFrame:
     return projected
 
 
-def make_network_figure(graph: nx.Graph, max_nodes: int = 140) -> go.Figure:
+def make_network_figure_3d(
+    graph: nx.Graph,
+    max_nodes: int = 140,
+    show_labels: bool = True,
+    max_holder_labels: int = 20,
+) -> go.Figure:
     if graph.number_of_nodes() == 0:
         return go.Figure()
 
@@ -248,19 +253,27 @@ def make_network_figure(graph: nx.Graph, max_nodes: int = 140) -> go.Figure:
         keep = set(company_nodes) | set(holder_nodes[: max_nodes - len(company_nodes)])
         graph = graph.subgraph(keep).copy()
 
-    pos = nx.spring_layout(graph, seed=42, k=1.2 / math.sqrt(max(graph.number_of_nodes(), 2)))
+    pos = nx.spring_layout(
+        graph,
+        dim=3,
+        seed=42,
+        k=1.4 / math.sqrt(max(graph.number_of_nodes(), 2)),
+    )
 
     edge_x: list[float] = []
     edge_y: list[float] = []
+    edge_z: list[float] = []
     for left, right in graph.edges():
-        x0, y0 = pos[left]
-        x1, y1 = pos[right]
+        x0, y0, z0 = pos[left]
+        x1, y1, z1 = pos[right]
         edge_x.extend([x0, x1, None])
         edge_y.extend([y0, y1, None])
+        edge_z.extend([z0, z1, None])
 
-    edge_trace = go.Scatter(
+    edge_trace = go.Scatter3d(
         x=edge_x,
         y=edge_y,
+        z=edge_z,
         mode="lines",
         line=dict(width=0.7, color="#9AA5B1"),
         hoverinfo="skip",
@@ -268,27 +281,46 @@ def make_network_figure(graph: nx.Graph, max_nodes: int = 140) -> go.Figure:
 
     node_x: list[float] = []
     node_y: list[float] = []
+    node_z: list[float] = []
     node_text: list[str] = []
     node_size: list[float] = []
     node_color: list[str] = []
+    node_label_text: list[str] = []
+    node_label_mode: list[str] = []
+
+    holder_rank = sorted(
+        [n for n, d in graph.nodes(data=True) if d["node_type"] == "shareholder"],
+        key=lambda n: graph.degree(n),
+        reverse=True,
+    )
+    labeled_holders = set(holder_rank[:max_holder_labels])
 
     for node, attrs in graph.nodes(data=True):
-        x, y = pos[node]
+        x, y, z = pos[node]
         degree = graph.degree(node)
         label = attrs["label"]
         node_x.append(x)
         node_y.append(y)
+        node_z.append(z)
         node_size.append(16 + degree * 3)
         node_text.append(f"{label}<br>type={attrs['node_type']}<br>degree={degree}")
         node_color.append("#0F766E" if attrs["node_type"] == "company" else "#C2410C")
+        should_label = attrs["node_type"] == "company" or node in labeled_holders
+        node_label_text.append(label if show_labels and should_label else "")
+        node_label_mode.append("markers+text" if show_labels and should_label else "markers")
 
-    node_trace = go.Scatter(
+    node_trace = go.Scatter3d(
         x=node_x,
         y=node_y,
-        mode="markers",
+        z=node_z,
+        mode="markers+text" if show_labels else "markers",
         marker=dict(size=node_size, color=node_color, line=dict(width=1, color="white")),
         text=node_text,
         hovertemplate="%{text}<extra></extra>",
+        textposition="top center",
+        textfont=dict(size=10, color="#1F2937"),
+        customdata=node_label_text,
+        texttemplate="%{customdata}",
     )
 
     figure = go.Figure(data=[edge_trace, node_trace])
@@ -296,9 +328,14 @@ def make_network_figure(graph: nx.Graph, max_nodes: int = 140) -> go.Figure:
         margin=dict(l=10, r=10, t=10, b=10),
         paper_bgcolor="white",
         plot_bgcolor="white",
-        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        scene=dict(
+            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title=""),
+            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title=""),
+            zaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title=""),
+            camera=dict(eye=dict(x=1.55, y=1.55, z=1.1)),
+        ),
         height=720,
+        showlegend=False,
     )
     return figure
 
@@ -330,6 +367,9 @@ def render_sidebar(df: pd.DataFrame, can_refresh: bool) -> dict:
         selected_companies = st.multiselect("Companies", companies, default=companies)
         exclude_nominees = st.toggle("Hide nominee / NVDR holders", value=False)
         only_cross_holders = st.toggle("Show only holders linked to >1 company", value=True)
+        st.header("Graph")
+        show_labels = st.toggle("Show labels", value=True)
+        max_holder_labels = st.slider("Top holder labels", 5, 40, 20, 1)
         sample_limit = st.number_input(
             "Refresh limit (local only)",
             min_value=5,
@@ -346,6 +386,8 @@ def render_sidebar(df: pd.DataFrame, can_refresh: bool) -> dict:
         "selected_companies": selected_companies,
         "exclude_nominees": exclude_nominees,
         "only_cross_holders": only_cross_holders,
+        "show_labels": show_labels,
+        "max_holder_labels": max_holder_labels,
         "force_refresh": force_refresh,
         "sample_limit": sample_limit,
     }
@@ -412,8 +454,16 @@ def main() -> None:
             + (" ..." if len(meta_df) > 8 else "")
         )
 
-    st.subheader("Bipartite Network")
-    st.plotly_chart(make_network_figure(graph), use_container_width=True)
+    st.subheader("3D Bipartite Network")
+    st.caption("Drag to rotate, zoom in/out, and hover nodes to inspect relationships.")
+    st.plotly_chart(
+        make_network_figure_3d(
+            graph,
+            show_labels=controls["show_labels"],
+            max_holder_labels=int(controls["max_holder_labels"]),
+        ),
+        use_container_width=True,
+    )
 
     left, right = st.columns(2)
     with left:
