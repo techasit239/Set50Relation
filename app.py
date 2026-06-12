@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 import time
 from pathlib import Path
@@ -10,8 +11,6 @@ import networkx as nx
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-from playwright.sync_api import sync_playwright
 
 SET50_URL = "https://www.set.or.th/th/market/index/set50/overview"
 SHAREHOLDER_URL = "https://www.set.or.th/th/market/product/stock/quote/{symbol}/major-shareholders"
@@ -38,6 +37,14 @@ NOMINEE_PATTERNS = [
 
 def ensure_cache_dir() -> None:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def is_running_on_streamlit_cloud() -> bool:
+    return bool(os.getenv("STREAMLIT_SHARING_MODE") or os.getenv("STREAMLIT_CLOUD"))
+
+
+def live_refresh_enabled() -> bool:
+    return os.getenv("ENABLE_LIVE_REFRESH", "0").lower() in {"1", "true", "yes"}
 
 
 def normalize_shareholder_name(name: str) -> str:
@@ -86,18 +93,15 @@ def scrape_major_shareholders(page, symbol: str) -> tuple[list[dict], dict]:
     url = SHAREHOLDER_URL.format(symbol=symbol)
     page.goto(url, wait_until="domcontentloaded", timeout=120000)
     page.wait_for_timeout(4000)
-    try:
-        page.wait_for_function(
-            """
-            () => {
-                const rows = Array.from(document.querySelectorAll('[role="tabpanel"] table tbody tr'));
-                return rows.some(row => row.querySelectorAll('td').length >= 4);
-            }
-            """,
-            timeout=120000,
-        )
-    except PlaywrightTimeoutError as exc:
-        raise RuntimeError(f"Timed out while reading shareholder table for {symbol}") from exc
+    page.wait_for_function(
+        """
+        () => {
+            const rows = Array.from(document.querySelectorAll('[role="tabpanel"] table tbody tr'));
+            return rows.some(row => row.querySelectorAll('td').length >= 4);
+        }
+        """,
+        timeout=120000,
+    )
 
     overview_text = page.eval_on_selector('[role="tabpanel"]', "node => node.innerText")
     rows = page.eval_on_selector_all(
@@ -132,6 +136,9 @@ def scrape_major_shareholders(page, symbol: str) -> tuple[list[dict], dict]:
 
 
 def refresh_data(limit: int | None = None, sleep_seconds: float = 1.0) -> tuple[pd.DataFrame, pd.DataFrame]:
+    # Import Playwright only when a live refresh is explicitly requested.
+    from playwright.sync_api import sync_playwright
+
     ensure_cache_dir()
     all_rows: list[dict] = []
     meta_rows: list[dict] = []
@@ -255,7 +262,7 @@ def make_network_figure(graph: nx.Graph, max_nodes: int = 140) -> go.Figure:
         x=edge_x,
         y=edge_y,
         mode="lines",
-        line=dict(width=0.7, color="#9aa5b1"),
+        line=dict(width=0.7, color="#9AA5B1"),
         hoverinfo="skip",
     )
 
@@ -273,7 +280,7 @@ def make_network_figure(graph: nx.Graph, max_nodes: int = 140) -> go.Figure:
         node_y.append(y)
         node_size.append(16 + degree * 3)
         node_text.append(f"{label}<br>type={attrs['node_type']}<br>degree={degree}")
-        node_color.append("#0f766e" if attrs["node_type"] == "company" else "#c2410c")
+        node_color.append("#0F766E" if attrs["node_type"] == "company" else "#C2410C")
 
     node_trace = go.Scatter(
         x=node_x,
@@ -315,7 +322,7 @@ def filter_dataframe(
     return filtered
 
 
-def render_sidebar(df: pd.DataFrame) -> dict:
+def render_sidebar(df: pd.DataFrame, can_refresh: bool) -> dict:
     companies = sorted(df["symbol"].dropna().unique().tolist()) if not df.empty else []
     with st.sidebar:
         st.header("Filters")
@@ -323,14 +330,17 @@ def render_sidebar(df: pd.DataFrame) -> dict:
         selected_companies = st.multiselect("Companies", companies, default=companies)
         exclude_nominees = st.toggle("Hide nominee / NVDR holders", value=False)
         only_cross_holders = st.toggle("Show only holders linked to >1 company", value=True)
-        force_refresh = st.button("Refresh from SET", type="primary")
         sample_limit = st.number_input(
-            "Refresh limit (for quick test)",
+            "Refresh limit (local only)",
             min_value=5,
             max_value=50,
             value=50,
             step=5,
+            disabled=not can_refresh,
         )
+        force_refresh = st.button("Refresh from SET", type="primary", disabled=not can_refresh)
+        if not can_refresh:
+            st.caption("Live refresh is disabled on this deployment. The app reads cached CSV files only.")
     return {
         "min_pct": min_pct,
         "selected_companies": selected_companies,
@@ -344,20 +354,31 @@ def render_sidebar(df: pd.DataFrame) -> dict:
 def main() -> None:
     st.set_page_config(page_title="SET50 Shareholder Network", layout="wide")
     st.title("SET50 Shareholder Network Analysis")
-    st.caption(
-        "ดึงข้อมูลผู้ถือหุ้นรายใหญ่จากเว็บไซต์ SET แล้วสร้าง Social Network Analysis ระหว่างผู้ถือหุ้นและบริษัทใน SET50"
-    )
+    st.caption("Cache-first dashboard for major shareholders of SET50 companies.")
 
     ensure_cache_dir()
-    cached_df, meta_df = load_cached_data()
-    controls = render_sidebar(cached_df)
+    cloud_mode = is_running_on_streamlit_cloud()
+    can_refresh = (not cloud_mode) and live_refresh_enabled()
 
-    if controls["force_refresh"] or cached_df.empty:
+    cached_df, meta_df = load_cached_data()
+    controls = render_sidebar(cached_df, can_refresh=can_refresh)
+
+    if controls["force_refresh"]:
         with st.spinner("Scraping SET50 constituents and major shareholders from SET..."):
             cached_df, meta_df = refresh_data(limit=int(controls["sample_limit"]))
 
     if cached_df.empty:
-        st.warning("ยังไม่มีข้อมูล กรุณากด Refresh from SET")
+        st.error(
+            "No cached dataset found. Upload the CSV cache files into work/cache/ before deploying this app."
+        )
+        st.code(
+            "work/cache/set50_shareholders.csv\nwork/cache/set50_shareholders_meta.csv",
+            language="text",
+        )
+        if cloud_mode:
+            st.info("This Streamlit Cloud deployment is running in cache-only mode.")
+        else:
+            st.info("For local refresh, set environment variable ENABLE_LIVE_REFRESH=1 before running.")
         return
 
     filtered_df = filter_dataframe(
@@ -369,7 +390,7 @@ def main() -> None:
     )
 
     if filtered_df.empty:
-        st.warning("ไม่พบข้อมูลตาม filter ที่เลือก")
+        st.warning("No rows match the current filters.")
         return
 
     graph = build_bipartite_graph(filtered_df)
@@ -384,7 +405,7 @@ def main() -> None:
 
     if not meta_df.empty:
         st.caption(
-            "Latest cached shareholder dates: "
+            "Cached shareholder dates: "
             + ", ".join(
                 f"{row.symbol} ({row.as_of_date})" for row in meta_df.head(8).itertuples(index=False)
             )
@@ -401,7 +422,7 @@ def main() -> None:
     with right:
         st.subheader("Company Overlap")
         if company_projection.empty:
-            st.info("ไม่มี company pair ที่แชร์ผู้ถือหุ้นภายใต้ filter นี้")
+            st.info("No company pairs share holders under the current filters.")
         else:
             st.dataframe(company_projection.head(30), use_container_width=True, hide_index=True)
 
@@ -413,8 +434,9 @@ def main() -> None:
     )
 
     st.info(
-        "ข้อควรระวัง: ความสัมพันธ์ที่เห็นเป็นความสัมพันธ์ตามรายชื่อผู้ถือหุ้นรายใหญ่ที่เปิดเผยบน SET "
-        "ซึ่งอาจรวม nominee, custodian, NVDR และยังไม่ใช่ ultimate beneficial ownership"
+        "Interpretation note: this graph is based on disclosed major shareholders on SET. "
+        "It can include nominees, custodians, and NVDR holders, so it is not the same as "
+        "ultimate beneficial ownership."
     )
 
 
