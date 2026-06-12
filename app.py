@@ -332,7 +332,6 @@ def make_network_figure_3d(
     node_text: list[str] = []
     node_size: list[float] = []
     node_color: list[str] = []
-    node_opacity: list[float] = []
     node_label_text: list[str] = []
 
     holder_rank = sorted(
@@ -353,17 +352,13 @@ def make_network_figure_3d(
         node_text.append(f"{label}<br>type={attrs['node_type']}<br>degree={degree}")
         base_color = "#0F766E" if attrs["node_type"] == "company" else "#C2410C"
         if focus_node and node == focus_node:
-            node_color.append("#7C3AED")
-            node_opacity.append(1.0)
+            node_color.append(rgba("#7C3AED", 1.0))
         elif focus_node and node in highlighted_neighbors:
-            node_color.append(base_color)
-            node_opacity.append(1.0)
+            node_color.append(rgba(base_color, 1.0))
         elif focus_node:
-            node_color.append(base_color)
-            node_opacity.append(0.18)
+            node_color.append(rgba(base_color, 0.18))
         else:
-            node_color.append(base_color)
-            node_opacity.append(0.9)
+            node_color.append(rgba(base_color, 0.9))
         should_label = attrs["node_type"] == "company" or node in labeled_holders
         node_label_text.append(label if show_labels and should_label else "")
 
@@ -375,7 +370,6 @@ def make_network_figure_3d(
         marker=dict(
             size=node_size,
             color=node_color,
-            opacity=node_opacity,
             line=dict(width=1, color="white"),
         ),
         text=node_text,
@@ -403,6 +397,14 @@ def make_network_figure_3d(
         showlegend=False,
     )
     return figure
+
+
+def rgba(hex_color: str, alpha: float) -> str:
+    hex_color = hex_color.lstrip("#")
+    red = int(hex_color[0:2], 16)
+    green = int(hex_color[2:4], 16)
+    blue = int(hex_color[4:6], 16)
+    return f"rgba({red}, {green}, {blue}, {alpha})"
 
 
 def filter_dataframe(
