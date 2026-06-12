@@ -242,6 +242,7 @@ def make_network_figure_3d(
     max_nodes: int = 140,
     show_labels: bool = True,
     max_holder_labels: int = 20,
+    focus_node: str | None = None,
 ) -> go.Figure:
     if graph.number_of_nodes() == 0:
         return go.Figure()
@@ -271,14 +272,59 @@ def make_network_figure_3d(
         edge_y.extend([y0, y1, None])
         edge_z.extend([z0, z1, None])
 
-    edge_trace = go.Scatter3d(
-        x=edge_x,
-        y=edge_y,
-        z=edge_z,
-        mode="lines",
-        line=dict(width=0.7, color="#9AA5B1"),
-        hoverinfo="skip",
-    )
+    highlighted_neighbors: set[str] = set()
+    if focus_node and focus_node in graph:
+        highlighted_neighbors = set(graph.neighbors(focus_node))
+
+    edge_traces: list[go.Scatter3d] = []
+    if focus_node and focus_node in graph:
+        dim_x: list[float] = []
+        dim_y: list[float] = []
+        dim_z: list[float] = []
+        hi_x: list[float] = []
+        hi_y: list[float] = []
+        hi_z: list[float] = []
+        for left, right in graph.edges():
+            x0, y0, z0 = pos[left]
+            x1, y1, z1 = pos[right]
+            target = hi_x if focus_node in {left, right} else dim_x
+            target.extend([x0, x1, None])
+            (hi_y if focus_node in {left, right} else dim_y).extend([y0, y1, None])
+            (hi_z if focus_node in {left, right} else dim_z).extend([z0, z1, None])
+        edge_traces.append(
+            go.Scatter3d(
+                x=dim_x,
+                y=dim_y,
+                z=dim_z,
+                mode="lines",
+                line=dict(width=0.6, color="rgba(156,163,175,0.18)"),
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+        edge_traces.append(
+            go.Scatter3d(
+                x=hi_x,
+                y=hi_y,
+                z=hi_z,
+                mode="lines",
+                line=dict(width=4, color="#2563EB"),
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+    else:
+        edge_traces.append(
+            go.Scatter3d(
+                x=edge_x,
+                y=edge_y,
+                z=edge_z,
+                mode="lines",
+                line=dict(width=0.7, color="#9AA5B1"),
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
 
     node_x: list[float] = []
     node_y: list[float] = []
@@ -286,8 +332,8 @@ def make_network_figure_3d(
     node_text: list[str] = []
     node_size: list[float] = []
     node_color: list[str] = []
+    node_opacity: list[float] = []
     node_label_text: list[str] = []
-    node_label_mode: list[str] = []
 
     holder_rank = sorted(
         [n for n, d in graph.nodes(data=True) if d["node_type"] == "shareholder"],
@@ -305,26 +351,43 @@ def make_network_figure_3d(
         node_z.append(z)
         node_size.append(16 + degree * 3)
         node_text.append(f"{label}<br>type={attrs['node_type']}<br>degree={degree}")
-        node_color.append("#0F766E" if attrs["node_type"] == "company" else "#C2410C")
+        base_color = "#0F766E" if attrs["node_type"] == "company" else "#C2410C"
+        if focus_node and node == focus_node:
+            node_color.append("#7C3AED")
+            node_opacity.append(1.0)
+        elif focus_node and node in highlighted_neighbors:
+            node_color.append(base_color)
+            node_opacity.append(1.0)
+        elif focus_node:
+            node_color.append(base_color)
+            node_opacity.append(0.18)
+        else:
+            node_color.append(base_color)
+            node_opacity.append(0.9)
         should_label = attrs["node_type"] == "company" or node in labeled_holders
         node_label_text.append(label if show_labels and should_label else "")
-        node_label_mode.append("markers+text" if show_labels and should_label else "markers")
 
     node_trace = go.Scatter3d(
         x=node_x,
         y=node_y,
         z=node_z,
         mode="markers+text" if show_labels else "markers",
-        marker=dict(size=node_size, color=node_color, line=dict(width=1, color="white")),
+        marker=dict(
+            size=node_size,
+            color=node_color,
+            opacity=node_opacity,
+            line=dict(width=1, color="white"),
+        ),
         text=node_text,
         hovertemplate="%{text}<extra></extra>",
         textposition="top center",
         textfont=dict(size=10, color="#1F2937"),
         customdata=node_label_text,
         texttemplate="%{customdata}",
+        showlegend=False,
     )
 
-    figure = go.Figure(data=[edge_trace, node_trace])
+    figure = go.Figure(data=[*edge_traces, node_trace])
     figure.update_layout(
         margin=dict(l=10, r=10, t=10, b=10),
         paper_bgcolor="white",
@@ -363,6 +426,14 @@ def filter_dataframe(
 
 def render_sidebar(df: pd.DataFrame, can_refresh: bool) -> dict:
     companies = sorted(df["symbol"].dropna().unique().tolist()) if not df.empty else []
+    holder_options = []
+    if not df.empty:
+        holder_options = (
+            df.groupby("shareholder_clean")["shareholder_name"]
+            .agg(lambda series: series.value_counts().idxmax())
+            .sort_values()
+            .tolist()
+        )
     with st.sidebar:
         st.header("Filters")
         min_pct = st.slider("Min holding %", 0.0, 20.0, 0.5, 0.1)
@@ -372,6 +443,7 @@ def render_sidebar(df: pd.DataFrame, can_refresh: bool) -> dict:
         st.header("Graph")
         show_labels = st.toggle("Show labels", value=True)
         max_holder_labels = st.slider("Top holder labels", 5, 40, 20, 1)
+        focus_holder_name = st.selectbox("Focus shareholder", ["None", *holder_options], index=0)
         sample_limit = st.number_input(
             "Refresh limit (local only)",
             min_value=5,
@@ -390,6 +462,7 @@ def render_sidebar(df: pd.DataFrame, can_refresh: bool) -> dict:
         "only_cross_holders": only_cross_holders,
         "show_labels": show_labels,
         "max_holder_labels": max_holder_labels,
+        "focus_holder_name": focus_holder_name,
         "force_refresh": force_refresh,
         "sample_limit": sample_limit,
     }
@@ -440,6 +513,19 @@ def main() -> None:
     graph = build_bipartite_graph(filtered_df)
     holder_metrics = compute_holder_metrics(filtered_df)
     company_projection = compute_company_projection(filtered_df)
+    top_holders_by_shares = holder_metrics.sort_values(
+        ["total_shares", "total_holding_pct"], ascending=[False, False]
+    )
+
+    focus_node = None
+    focused_holder_clean = None
+    if controls["focus_holder_name"] != "None":
+        selected = holder_metrics.loc[
+            holder_metrics["shareholder_name"] == controls["focus_holder_name"], "shareholder_clean"
+        ]
+        if not selected.empty:
+            focused_holder_clean = selected.iloc[0]
+            focus_node = f"holder::{focused_holder_clean}"
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Companies", filtered_df["symbol"].nunique())
@@ -461,27 +547,47 @@ def main() -> None:
     st.markdown(
         "`Green/Teal nodes` = listed companies in SET50, "
         "`Orange nodes` = shareholders, "
-        "`Gray lines` = shareholding relationships between a shareholder and a company."
+        "`Gray lines` = shareholding relationships between a shareholder and a company, "
+        "`Purple node` = focused shareholder, "
+        "`Blue lines` = links from the focused shareholder to connected companies."
     )
+    if focus_node:
+        st.caption(f"Focused shareholder: `{controls['focus_holder_name']}`")
     st.plotly_chart(
         make_network_figure_3d(
             graph,
             show_labels=controls["show_labels"],
             max_holder_labels=int(controls["max_holder_labels"]),
+            focus_node=focus_node,
         ),
         use_container_width=True,
     )
 
     left, right = st.columns(2)
     with left:
+        st.subheader("Top Holders by Total Shares")
+        st.dataframe(top_holders_by_shares.head(30), use_container_width=True, hide_index=True)
+    with right:
         st.subheader("Top Cross-holders")
         st.dataframe(holder_metrics.head(30), use_container_width=True, hide_index=True)
-    with right:
+
+    left2, right2 = st.columns(2)
+    with left2:
         st.subheader("Company Overlap")
         if company_projection.empty:
             st.info("No company pairs share holders under the current filters.")
         else:
             st.dataframe(company_projection.head(30), use_container_width=True, hide_index=True)
+    with right2:
+        if focus_node:
+            st.subheader("Focused Holder Links")
+            focused_edges = filtered_df[
+                filtered_df["shareholder_clean"] == focused_holder_clean
+            ].sort_values("holding_pct", ascending=False)
+            st.dataframe(focused_edges, use_container_width=True, hide_index=True)
+        else:
+            st.subheader("Focused Holder Links")
+            st.info("Select a shareholder in the sidebar to highlight its connections.")
 
     st.subheader("Raw Edges")
     st.dataframe(
