@@ -254,7 +254,31 @@ def make_network_figure_2d(
         keep = set(company_nodes) | set(holder_nodes[: max_nodes - len(company_nodes)])
         graph = graph.subgraph(keep).copy()
 
-    pos = nx.spring_layout(graph, dim=2, seed=42, k=3.2 / math.sqrt(max(graph.number_of_nodes(), 2)), iterations=400)
+    def spaced_positions(nodes: list[str], x_value: float) -> dict[str, tuple[float, float]]:
+        total = len(nodes)
+        if total == 0:
+            return {}
+        if total == 1:
+            return {nodes[0]: (x_value, 0.0)}
+        gap = 2.4 / (total - 1)
+        start = 1.2
+        return {
+            node: (x_value, start - idx * gap)
+            for idx, node in enumerate(nodes)
+        }
+
+    company_nodes = sorted(
+        [n for n, d in graph.nodes(data=True) if d["node_type"] == "company"],
+        key=lambda n: (-graph.degree(n), graph.nodes[n]["label"]),
+    )
+    holder_nodes = sorted(
+        [n for n, d in graph.nodes(data=True) if d["node_type"] == "shareholder"],
+        key=lambda n: (-graph.degree(n), graph.nodes[n]["label"]),
+    )
+
+    pos: dict[str, tuple[float, float]] = {}
+    pos.update(spaced_positions(company_nodes, -1.25))
+    pos.update(spaced_positions(holder_nodes, 1.25))
 
     edge_x: list[float] = []
     edge_y: list[float] = []
@@ -332,7 +356,7 @@ def make_network_figure_2d(
         label = attrs["label"]
         node_x.append(x)
         node_y.append(y)
-        node_size.append(16 + degree * 3)
+        node_size.append(min(46, 12 + degree * 2.2))
         node_text.append(f"{label}<br>type={attrs['node_type']}<br>degree={degree}")
         base_color = "#0F766E" if attrs["node_type"] == "company" else "#C2410C"
         if focus_node and node == focus_node:
@@ -357,7 +381,10 @@ def make_network_figure_2d(
         ),
         text=node_text,
         hovertemplate="%{text}<extra></extra>",
-        textposition="top center",
+        textposition=[
+            "middle left" if graph.nodes[node]["node_type"] == "company" else "middle right"
+            for node in graph.nodes()
+        ] if show_labels else None,
         textfont=dict(size=10, color="#1F2937"),
         customdata=node_label_text,
         texttemplate="%{customdata}",
@@ -369,8 +396,8 @@ def make_network_figure_2d(
         margin=dict(l=10, r=10, t=10, b=10),
         paper_bgcolor="white",
         plot_bgcolor="white",
-        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title=""),
-        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title="", scaleanchor="x", scaleratio=1),
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title="", range=[-1.9, 1.9]),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title="", range=[-1.35, 1.35]),
         height=980,
         showlegend=False,
     )
@@ -523,13 +550,17 @@ def main() -> None:
         )
 
     st.subheader("2D Bipartite Network")
-    st.caption("Pan, zoom, and hover nodes to inspect relationships. The layout is spread out to reduce node overlap.")
+    st.caption(
+        "Companies are fixed on the left, shareholders on the right. "
+        "This layout reduces overlap and makes holder-to-company links easier to read."
+    )
     st.markdown(
         "`Green/Teal nodes` = listed companies in SET50, "
         "`Orange nodes` = shareholders, "
         "`Gray lines` = shareholding relationships between a shareholder and a company, "
         "`Purple node` = focused shareholder, "
-        "`Blue lines` = links from the focused shareholder to connected companies."
+        "`Blue lines` = links from the focused shareholder to connected companies, "
+        "`Larger circles` = nodes with more connections."
     )
     if focus_node:
         st.caption(f"Focused shareholder: `{controls['focus_holder_name']}`")
