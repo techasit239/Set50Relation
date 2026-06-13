@@ -260,8 +260,8 @@ def make_network_figure_2d(
             return {}
         if total == 1:
             return {nodes[0]: (x_value, 0.0)}
-        gap = 3.4 / (total - 1)
-        start = 1.7
+        gap = 5.5 / (total - 1)
+        start = 2.5
         return {
             node: (x_value, start - idx * gap)
             for idx, node in enumerate(nodes)
