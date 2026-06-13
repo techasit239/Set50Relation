@@ -260,8 +260,8 @@ def make_network_figure_2d(
             return {}
         if total == 1:
             return {nodes[0]: (x_value, 0.0)}
-        gap = 2.4 / (total - 1)
-        start = 1.2
+        gap = 3.4 / (total - 1)
+        start = 1.7
         return {
             node: (x_value, start - idx * gap)
             for idx, node in enumerate(nodes)
@@ -277,8 +277,8 @@ def make_network_figure_2d(
     )
 
     pos: dict[str, tuple[float, float]] = {}
-    pos.update(spaced_positions(company_nodes, -1.25))
-    pos.update(spaced_positions(holder_nodes, 1.25))
+    pos.update(spaced_positions(company_nodes, -2.1))
+    pos.update(spaced_positions(holder_nodes, 2.1))
 
     edge_x: list[float] = []
     edge_y: list[float] = []
@@ -357,7 +357,7 @@ def make_network_figure_2d(
         label = attrs["label"]
         node_x.append(x)
         node_y.append(y)
-        node_size.append(min(46, 12 + degree * 2.2))
+        node_size.append(min(38, 10 + degree * 1.8))
         node_text.append(f"{label}<br>type={attrs['node_type']}<br>degree={degree}")
         base_color = "#0F766E" if attrs["node_type"] == "company" else "#C2410C"
         if focus_node and node == focus_node:
@@ -399,12 +399,12 @@ def make_network_figure_2d(
 
     figure = go.Figure(data=[*edge_traces, node_trace])
     figure.update_layout(
-        margin=dict(l=10, r=10, t=10, b=10),
+        margin=dict(l=20, r=20, t=10, b=10),
         paper_bgcolor="white",
         plot_bgcolor="white",
-        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title="", range=[-1.9, 1.9]),
-        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title="", range=[-1.35, 1.35]),
-        height=980,
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title="", range=[-2.8, 2.8]),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title="", range=[-1.95, 1.95]),
+        height=1100,
         showlegend=False,
     )
     return figure
@@ -615,7 +615,7 @@ def main() -> None:
     st.subheader("2D Bipartite Network")
     st.caption(
         "Companies are fixed on the left, shareholders on the right. "
-        "This layout reduces overlap and makes holder-to-company links easier to read."
+        "The two sides are spread farther apart and vertically spaced to reduce node overlap."
     )
     st.markdown(
         "`Green/Teal nodes` = listed companies in SET50, "
