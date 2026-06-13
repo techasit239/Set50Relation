@@ -277,8 +277,8 @@ def make_network_figure_2d(
     )
 
     pos: dict[str, tuple[float, float]] = {}
-    pos.update(spaced_positions(company_nodes, -2.1))
-    pos.update(spaced_positions(holder_nodes, 2.1))
+    pos.update(spaced_positions(company_nodes, -1.1))
+    pos.update(spaced_positions(holder_nodes, 1.1))
 
     edge_x: list[float] = []
     edge_y: list[float] = []
@@ -403,8 +403,8 @@ def make_network_figure_2d(
         paper_bgcolor="white",
         plot_bgcolor="white",
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title="", range=[-2.8, 2.8]),
-        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title="", range=[-1.95, 1.95]),
-        height=1100,
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title="", range=[-2.50, 2.50]),
+        height=1000,
         showlegend=False,
     )
     return figure
