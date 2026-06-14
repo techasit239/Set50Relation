@@ -11,6 +11,8 @@ import networkx as nx
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
+from pyvis.network import Network
 
 SET50_URL = "https://www.set.or.th/th/market/index/set50/overview"
 SHAREHOLDER_URL = "https://www.set.or.th/th/market/product/stock/quote/{symbol}/major-shareholders"
@@ -190,6 +192,150 @@ def build_bipartite_graph(df: pd.DataFrame) -> nx.Graph:
     return graph
 
 
+def make_draggable_network_html(
+    graph: nx.Graph,
+    focus_node: str | None = None,
+    max_nodes: int = 180,
+) -> str:
+    if graph.number_of_nodes() == 0:
+        return "<p>No graph data available.</p>"
+
+    if graph.number_of_nodes() > max_nodes:
+        company_nodes = [n for n, d in graph.nodes(data=True) if d["node_type"] == "company"]
+        holder_nodes = [n for n, d in graph.nodes(data=True) if d["node_type"] == "shareholder"]
+        holder_nodes = sorted(holder_nodes, key=lambda n: graph.degree(n), reverse=True)
+        keep = set(company_nodes) | set(holder_nodes[: max_nodes - len(company_nodes)])
+        graph = graph.subgraph(keep).copy()
+
+    highlighted_neighbors: set[str] = set()
+    if focus_node and focus_node in graph:
+        highlighted_neighbors = set(graph.neighbors(focus_node))
+
+    company_nodes = sorted(
+        [n for n, d in graph.nodes(data=True) if d["node_type"] == "company"],
+        key=lambda n: (-graph.degree(n), graph.nodes[n]["label"]),
+    )
+    holder_nodes = sorted(
+        [n for n, d in graph.nodes(data=True) if d["node_type"] == "shareholder"],
+        key=lambda n: (-graph.degree(n), graph.nodes[n]["label"]),
+    )
+
+    net = Network(
+        height="1150px",
+        width="100%",
+        bgcolor="#FFFFFF",
+        font_color="#1F2937",
+        directed=False,
+        cdn_resources="in_line",
+    )
+
+    def y_positions(nodes: list[str], top: int) -> dict[str, int]:
+        total = len(nodes)
+        if total == 0:
+            return {}
+        if total == 1:
+            return {nodes[0]: 0}
+        gap = (top * 2) / max(total - 1, 1)
+        return {node: int(top - idx * gap) for idx, node in enumerate(nodes)}
+
+    company_y = y_positions(company_nodes, 900)
+    holder_y = y_positions(holder_nodes, 900)
+
+    for node in company_nodes:
+        attrs = graph.nodes[node]
+        degree = graph.degree(node)
+        color = "#7C3AED" if node == focus_node else ("#0F766E" if not focus_node or node in highlighted_neighbors else "rgba(15,118,110,0.20)")
+        net.add_node(
+            node,
+            label=attrs["label"],
+            title=f"{attrs['label']}<br>type=company<br>degree={degree}",
+            color=color,
+            size=min(34, 10 + degree * 1.6),
+            x=-900,
+            y=company_y[node],
+            physics=True,
+        )
+
+    for node in holder_nodes:
+        attrs = graph.nodes[node]
+        degree = graph.degree(node)
+        color = "#7C3AED" if node == focus_node else ("#C2410C" if not focus_node or node in highlighted_neighbors else "rgba(194,65,12,0.20)")
+        net.add_node(
+            node,
+            label=attrs["label"],
+            title=f"{attrs['label']}<br>type=shareholder<br>degree={degree}",
+            color=color,
+            size=min(34, 10 + degree * 1.6),
+            x=900,
+            y=holder_y[node],
+            physics=True,
+        )
+
+    for left, right, edge_attrs in graph.edges(data=True):
+        if focus_node and focus_node in {left, right}:
+            color = "#2563EB"
+            width = 4
+        elif focus_node:
+            color = "rgba(156,163,175,0.18)"
+            width = 1
+        else:
+            color = "rgba(156,163,175,0.65)"
+            width = 1
+        net.add_edge(
+            left,
+            right,
+            color=color,
+            width=width,
+            title=f"holding_pct={edge_attrs.get('weight', 0):.2f}%<br>shares={edge_attrs.get('shares', 0):,.0f}",
+        )
+
+    net.set_options(
+        """
+        const options = {
+          "interaction": {
+            "dragNodes": true,
+            "dragView": true,
+            "zoomView": true,
+            "hover": true,
+            "navigationButtons": true
+          },
+          "physics": {
+            "enabled": true,
+            "barnesHut": {
+              "gravitationalConstant": -9000,
+              "centralGravity": 0.05,
+              "springLength": 190,
+              "springConstant": 0.03,
+              "damping": 0.16,
+              "avoidOverlap": 1
+            },
+            "minVelocity": 0.75,
+            "solver": "barnesHut",
+            "stabilization": {
+              "enabled": true,
+              "iterations": 500,
+              "updateInterval": 25
+            }
+          },
+          "nodes": {
+            "font": {
+              "size": 18,
+              "face": "Arial"
+            },
+            "shape": "dot"
+          },
+          "edges": {
+            "smooth": {
+              "enabled": true,
+              "type": "continuous"
+            }
+          }
+        }
+        """
+    )
+    return net.generate_html()
+
+
 def compute_holder_metrics(df: pd.DataFrame) -> pd.DataFrame:
     name_map = (
         df.groupby("shareholder_clean")["shareholder_name"]
@@ -260,8 +406,8 @@ def make_network_figure_2d(
             return {}
         if total == 1:
             return {nodes[0]: (x_value, 0.0)}
-        gap = 5.5 / (total - 1)
-        start = 2.5
+        gap = 3.4 / (total - 1)
+        start = 1.7
         return {
             node: (x_value, start - idx * gap)
             for idx, node in enumerate(nodes)
@@ -277,8 +423,8 @@ def make_network_figure_2d(
     )
 
     pos: dict[str, tuple[float, float]] = {}
-    pos.update(spaced_positions(company_nodes, -1.1))
-    pos.update(spaced_positions(holder_nodes, 1.1))
+    pos.update(spaced_positions(company_nodes, -2.1))
+    pos.update(spaced_positions(holder_nodes, 2.1))
 
     edge_x: list[float] = []
     edge_y: list[float] = []
@@ -403,8 +549,8 @@ def make_network_figure_2d(
         paper_bgcolor="white",
         plot_bgcolor="white",
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title="", range=[-2.8, 2.8]),
-        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title="", range=[-2.50, 2.50]),
-        height=1000,
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title="", range=[-1.95, 1.95]),
+        height=1100,
         showlegend=False,
     )
     return figure
@@ -418,25 +564,10 @@ def rgba(hex_color: str, alpha: float) -> str:
     return f"rgba({red}, {green}, {blue}, {alpha})"
 
 
-def get_selected_node_id(event) -> str | None:
-    if not event:
-        return None
-    selection = event.get("selection") if hasattr(event, "get") else None
-    if not selection:
-        return None
-    points = selection.get("points", [])
-    if not points:
-        return None
-    customdata = points[-1].get("customdata")
-    if not customdata:
-        return None
-    return customdata[0]
-
-
 def render_focus_details(node_id: str | None, filtered_df: pd.DataFrame) -> None:
     st.subheader("Selected Node Details")
     if not node_id:
-        st.info("Click a node in the graph to inspect its relationships.")
+        st.info("Choose a shareholder from 'Manual focus shareholder' to inspect its relationships.")
         return
 
     node_type, raw_id = node_id.split("::", 1)
@@ -505,7 +636,7 @@ def render_sidebar(df: pd.DataFrame, can_refresh: bool) -> dict:
         show_labels = st.toggle("Show labels", value=True)
         max_holder_labels = st.slider("Top holder labels", 5, 40, 20, 1)
         focus_holder_name = st.selectbox("Manual focus shareholder", ["None", *holder_options], index=0)
-        clear_selected_node = st.button("Clear clicked node")
+        clear_selected_node = st.button("Clear focus")
         sample_limit = st.number_input(
             "Refresh limit (local only)",
             min_value=5,
@@ -539,14 +670,9 @@ def main() -> None:
     ensure_cache_dir()
     cloud_mode = is_running_on_streamlit_cloud()
     can_refresh = (not cloud_mode) and live_refresh_enabled()
-    if "selected_node_id" not in st.session_state:
-        st.session_state["selected_node_id"] = None
 
     cached_df, meta_df = load_cached_data()
     controls = render_sidebar(cached_df, can_refresh=can_refresh)
-
-    if controls["clear_selected_node"]:
-        st.session_state["selected_node_id"] = None
 
     if controls["force_refresh"]:
         with st.spinner("Scraping SET50 constituents and major shareholders from SET..."):
@@ -585,17 +711,18 @@ def main() -> None:
         ["total_shares", "total_holding_pct"], ascending=[False, False]
     )
 
-    focus_node = st.session_state.get("selected_node_id")
+    focus_node = None
     focused_holder_clean = None
-    if not focus_node and controls["focus_holder_name"] != "None":
+    if controls["focus_holder_name"] != "None":
         selected = holder_metrics.loc[
             holder_metrics["shareholder_name"] == controls["focus_holder_name"], "shareholder_clean"
         ]
         if not selected.empty:
             focused_holder_clean = selected.iloc[0]
             focus_node = f"holder::{focused_holder_clean}"
-    elif focus_node and focus_node.startswith("holder::"):
-        focused_holder_clean = focus_node.split("::", 1)[1]
+    if controls["clear_selected_node"]:
+        focus_node = None
+        focused_holder_clean = None
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Companies", filtered_df["symbol"].nunique())
@@ -636,22 +763,15 @@ def main() -> None:
                 .idxmax()
             )
             st.caption(f"Focused shareholder: `{holder_name}`")
-    event = st.plotly_chart(
-        make_network_figure_2d(
+    st.caption("You can drag nodes freely to rearrange the network.")
+    components.html(
+        make_draggable_network_html(
             graph,
-            show_labels=controls["show_labels"],
-            max_holder_labels=int(controls["max_holder_labels"]),
             focus_node=focus_node,
         ),
-        use_container_width=True,
-        key="network_chart",
-        on_select="rerun",
-        selection_mode=("points",),
+        height=1180,
+        scrolling=False,
     )
-    selected_node_id = get_selected_node_id(event)
-    if selected_node_id and selected_node_id != st.session_state.get("selected_node_id"):
-        st.session_state["selected_node_id"] = selected_node_id
-        st.rerun()
 
     left, right = st.columns(2)
     with left:
