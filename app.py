@@ -307,7 +307,7 @@ def build_relationship_metrics(
     score_maps = {metric: compute_centrality_scores(graph, metric) for metric in metric_names}
     try:
         pagerank_scores = nx.pagerank(graph)
-    except nx.NetworkXException:
+    except (nx.NetworkXException, ModuleNotFoundError, ImportError):
         pagerank_scores = {node: 0.0 for node in graph.nodes}
 
     rows: list[dict] = []
