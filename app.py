@@ -243,9 +243,15 @@ def make_draggable_network_html(
 
     initial_pos: dict[str, tuple[int, int]] = {}
     if layout_mode == "nx":
-        layout = nx.spring_layout(graph, seed=42, k=1.8 / math.sqrt(max(graph.number_of_nodes(), 2)), iterations=300)
+        layout = nx.spring_layout(
+            graph,
+            seed=42,
+            k=3.8 / math.sqrt(max(graph.number_of_nodes(), 2)),
+            iterations=700,
+            scale=2.8,
+        )
         for node, (x, y) in layout.items():
-            initial_pos[node] = (int(x * 1600), int(y * 950))
+            initial_pos[node] = (int(x * 2400), int(y * 1500))
     else:
         company_y = y_positions(company_nodes, 900)
         holder_y = y_positions(holder_nodes, 900)
@@ -936,7 +942,7 @@ def main() -> None:
     st.subheader("2D Bipartite Network")
     st.caption(
         "Choose either a fixed left/right bipartite layout or an NX graph-style layout, "
-        "then drag nodes freely to refine the view."
+        "then drag nodes freely to refine the view. The NX layout is tuned to spread nodes farther apart."
     )
     st.markdown(
         "`Green/Teal nodes` = listed companies in SET50, "
