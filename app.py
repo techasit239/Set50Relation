@@ -253,7 +253,7 @@ def make_draggable_network_html(
             size=min(34, 10 + degree * 1.6),
             x=-900,
             y=company_y[node],
-            physics=True,
+            physics=False,
         )
 
     for node in holder_nodes:
@@ -268,7 +268,7 @@ def make_draggable_network_html(
             size=min(34, 10 + degree * 1.6),
             x=900,
             y=holder_y[node],
-            physics=True,
+            physics=False,
         )
 
     for left, right, edge_attrs in graph.edges(data=True):
@@ -300,7 +300,7 @@ def make_draggable_network_html(
             "navigationButtons": true
           },
           "physics": {
-            "enabled": true,
+            "enabled": false,
             "barnesHut": {
               "gravitationalConstant": -9000,
               "centralGravity": 0.05,
@@ -310,12 +310,7 @@ def make_draggable_network_html(
               "avoidOverlap": 1
             },
             "minVelocity": 0.75,
-            "solver": "barnesHut",
-            "stabilization": {
-              "enabled": true,
-              "iterations": 500,
-              "updateInterval": 25
-            }
+            "solver": "barnesHut"
           },
           "nodes": {
             "font": {
@@ -763,7 +758,7 @@ def main() -> None:
                 .idxmax()
             )
             st.caption(f"Focused shareholder: `{holder_name}`")
-    st.caption("You can drag nodes freely to rearrange the network.")
+    st.caption("The graph starts in a stable layout. You can click and drag nodes freely to rearrange it.")
     components.html(
         make_draggable_network_html(
             graph,
