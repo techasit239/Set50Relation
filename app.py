@@ -4,6 +4,7 @@ import math
 import os
 import re
 import time
+import json
 from pathlib import Path
 from typing import Iterable
 
@@ -194,6 +195,7 @@ def build_bipartite_graph(df: pd.DataFrame) -> nx.Graph:
 
 def make_draggable_network_html(
     graph: nx.Graph,
+    filtered_df: pd.DataFrame,
     focus_node: str | None = None,
     max_nodes: int = 180,
     layout_mode: str = "bipartite",
@@ -339,7 +341,187 @@ def make_draggable_network_html(
         }
         """
     )
-    return net.generate_html()
+    detail_rows = {}
+    for symbol in sorted(filtered_df["symbol"].unique()):
+        company_df = filtered_df[filtered_df["symbol"] == symbol].sort_values("holding_pct", ascending=False)
+        detail_rows[f"company::{symbol}"] = {
+            "type": "company",
+            "title": symbol,
+            "subtitle": f"{company_df['shareholder_clean'].nunique()} shareholders under current filters",
+            "columns": ["shareholder_name", "holding_pct", "shares", "as_of_date"],
+            "rows": company_df[
+                ["shareholder_name", "holding_pct", "shares", "as_of_date", "source_url"]
+            ].to_dict("records"),
+        }
+
+    holder_names = (
+        filtered_df.groupby("shareholder_clean")["shareholder_name"]
+        .agg(lambda series: series.value_counts().idxmax())
+        .to_dict()
+    )
+    for holder_clean, holder_name in holder_names.items():
+        holder_df = filtered_df[filtered_df["shareholder_clean"] == holder_clean].sort_values(
+            "holding_pct", ascending=False
+        )
+        detail_rows[f"holder::{holder_clean}"] = {
+            "type": "shareholder",
+            "title": holder_name,
+            "subtitle": f"{holder_df['symbol'].nunique()} companies under current filters",
+            "columns": ["symbol", "holding_pct", "shares", "as_of_date"],
+            "rows": holder_df[
+                ["symbol", "holding_pct", "shares", "as_of_date", "source_url"]
+            ].to_dict("records"),
+        }
+
+    html = net.generate_html()
+    details_json = json.dumps(detail_rows, ensure_ascii=False)
+    container_markup = """
+    <style>
+      body { margin: 0; font-family: Arial, sans-serif; background: #ffffff; }
+      .graph-shell { display: grid; grid-template-columns: minmax(0, 3fr) minmax(320px, 1fr); gap: 16px; align-items: start; }
+      .graph-panel { min-width: 0; }
+      .detail-panel {
+        border: 1px solid #e5e7eb; border-radius: 12px; padding: 14px; background: #f8fafc;
+        max-height: 1120px; overflow: auto; color: #111827;
+      }
+      .detail-panel h3 { margin: 0 0 6px 0; font-size: 18px; }
+      .detail-panel p { margin: 0 0 10px 0; color: #475569; font-size: 13px; }
+      .detail-panel table { width: 100%; border-collapse: collapse; font-size: 12px; }
+      .detail-panel th, .detail-panel td { border-bottom: 1px solid #e5e7eb; padding: 6px 4px; text-align: left; vertical-align: top; }
+      .detail-panel th { position: sticky; top: 0; background: #f8fafc; }
+      .detail-panel a { color: #2563eb; text-decoration: none; }
+      .detail-empty { color: #64748b; font-size: 13px; }
+      @media (max-width: 1100px) {
+        .graph-shell { grid-template-columns: 1fr; }
+        .detail-panel { max-height: 420px; }
+      }
+    </style>
+    <div class="graph-shell">
+      <div class="graph-panel">
+        <div id="mynetwork"></div>
+      </div>
+      <div class="detail-panel" id="detail-panel">
+        <h3>Selected Node Details</h3>
+        <p class="detail-empty">Click a node to inspect its connected companies or shareholders.</p>
+      </div>
+    </div>
+    """
+    html = re.sub(r"<body>\s*<div class=\"card\"[^>]*>\s*<div id=\"mynetwork\"></div>\s*</div>", f"<body>{container_markup}", html, count=1, flags=re.S)
+    interaction_script = """
+    <script type="text/javascript">
+    (function() {
+      if (typeof network === "undefined" || typeof nodes === "undefined" || typeof edges === "undefined") {
+        return;
+      }
+      const detailData = __DETAILS_JSON__;
+      const detailPanel = document.getElementById("detail-panel");
+
+      const defaultNodeStyles = {};
+      const defaultEdgeStyles = {};
+
+      function snapshotDefaults() {
+        nodes.get().forEach((node) => {
+          defaultNodeStyles[node.id] = {
+            color: node.color,
+            size: node.size,
+          };
+        });
+        edges.get().forEach((edge) => {
+          defaultEdgeStyles[edge.id] = {
+            color: edge.color,
+            width: edge.width,
+          };
+        });
+      }
+
+      function resetStyles() {
+        const nodeUpdates = Object.entries(defaultNodeStyles).map(([id, style]) => ({
+          id,
+          color: style.color,
+          size: style.size,
+        }));
+        const edgeUpdates = Object.entries(defaultEdgeStyles).map(([id, style]) => ({
+          id,
+          color: style.color,
+          width: style.width,
+        }));
+        nodes.update(nodeUpdates);
+        edges.update(edgeUpdates);
+        if (detailPanel) {
+          detailPanel.innerHTML = '<h3>Selected Node Details</h3><p class="detail-empty">Click a node to inspect its connected companies or shareholders.</p>';
+        }
+      }
+
+      function formatValue(key, value) {
+        if (key === "holding_pct" && value !== undefined && value !== null) return Number(value).toFixed(2);
+        if (key === "shares" && value !== undefined && value !== null) return Number(value).toLocaleString();
+        return value ?? "";
+      }
+
+      function renderDetails(nodeId) {
+        if (!detailPanel) return;
+        const data = detailData[nodeId];
+        if (!data) {
+          detailPanel.innerHTML = '<h3>Selected Node Details</h3><p class="detail-empty">No detail found for this node.</p>';
+          return;
+        }
+        const headers = data.columns.map((c) => `<th>${c}</th>`).join("");
+        const rows = data.rows.map((row) => {
+          const cells = data.columns.map((c) => `<td>${formatValue(c, row[c])}</td>`).join("");
+          const src = row.source_url ? `<td><a href="${row.source_url}" target="_blank">source</a></td>` : "<td></td>";
+          return `<tr>${cells}${src}</tr>`;
+        }).join("");
+        detailPanel.innerHTML = `
+          <h3>${data.title}</h3>
+          <p>${data.subtitle}</p>
+          <table>
+            <thead><tr>${headers}<th>source</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        `;
+      }
+
+      function highlightNode(nodeId) {
+        resetStyles();
+        const connectedEdgeIds = network.getConnectedEdges(nodeId);
+        const connectedNodeIds = network.getConnectedNodes(nodeId);
+
+        const edgeUpdates = edges.get().map((edge) => {
+          if (connectedEdgeIds.includes(edge.id)) {
+            return { id: edge.id, color: "#2563EB", width: 4 };
+          }
+          return { id: edge.id, color: "rgba(156,163,175,0.12)", width: 1 };
+        });
+
+        const nodeUpdates = nodes.get().map((node) => {
+          if (node.id === nodeId) {
+            return { id: node.id, color: "#7C3AED", size: Math.max(node.size || 10, 28) };
+          }
+          if (connectedNodeIds.includes(node.id)) {
+            return { id: node.id, color: defaultNodeStyles[node.id].color, size: defaultNodeStyles[node.id].size };
+          }
+          return { id: node.id, color: "rgba(203,213,225,0.35)", size: defaultNodeStyles[node.id].size };
+        });
+
+        edges.update(edgeUpdates);
+        nodes.update(nodeUpdates);
+        renderDetails(nodeId);
+      }
+
+      snapshotDefaults();
+
+      network.on("click", function(params) {
+        if (params.nodes && params.nodes.length > 0) {
+          highlightNode(params.nodes[0]);
+        } else {
+          resetStyles();
+        }
+      });
+    })();
+    </script>
+    """
+    interaction_script = interaction_script.replace("__DETAILS_JSON__", details_json)
+    return html.replace("</body>", interaction_script + "</body>")
 
 
 def compute_holder_metrics(df: pd.DataFrame) -> pd.DataFrame:
@@ -573,7 +755,7 @@ def rgba(hex_color: str, alpha: float) -> str:
 def render_focus_details(node_id: str | None, filtered_df: pd.DataFrame) -> None:
     st.subheader("Selected Node Details")
     if not node_id:
-        st.info("Choose a shareholder from 'Manual focus shareholder' to inspect its relationships.")
+        st.info("Use the detail panel next to the graph by clicking a node inside the network.")
         return
 
     node_type, raw_id = node_id.split("::", 1)
@@ -775,10 +957,14 @@ def main() -> None:
                 .idxmax()
             )
             st.caption(f"Focused shareholder: `{holder_name}`")
-    st.caption("The graph starts in a stable layout. You can click and drag nodes freely to rearrange it.")
+    st.caption(
+        "The graph starts in a stable layout. You can click and drag nodes freely, "
+        "click a node to highlight its connected edges, and click empty space to reset."
+    )
     components.html(
         make_draggable_network_html(
             graph,
+            filtered_df=filtered_df,
             focus_node=focus_node,
             layout_mode="nx" if controls["layout_mode"] == "NX Graph Layout" else "bipartite",
         ),
@@ -802,7 +988,8 @@ def main() -> None:
         else:
             st.dataframe(company_projection.head(30), use_container_width=True, hide_index=True)
     with right2:
-        render_focus_details(focus_node, filtered_df)
+        st.subheader("Interaction")
+        st.info("Click nodes inside the graph to inspect details in the panel beside the network.")
 
     st.subheader("Raw Edges")
     st.dataframe(
