@@ -196,6 +196,7 @@ def make_draggable_network_html(
     graph: nx.Graph,
     focus_node: str | None = None,
     max_nodes: int = 180,
+    layout_mode: str = "bipartite",
 ) -> str:
     if graph.number_of_nodes() == 0:
         return "<p>No graph data available.</p>"
@@ -238,8 +239,18 @@ def make_draggable_network_html(
         gap = (top * 2) / max(total - 1, 1)
         return {node: int(top - idx * gap) for idx, node in enumerate(nodes)}
 
-    company_y = y_positions(company_nodes, 900)
-    holder_y = y_positions(holder_nodes, 900)
+    initial_pos: dict[str, tuple[int, int]] = {}
+    if layout_mode == "nx":
+        layout = nx.spring_layout(graph, seed=42, k=1.8 / math.sqrt(max(graph.number_of_nodes(), 2)), iterations=300)
+        for node, (x, y) in layout.items():
+            initial_pos[node] = (int(x * 1600), int(y * 950))
+    else:
+        company_y = y_positions(company_nodes, 900)
+        holder_y = y_positions(holder_nodes, 900)
+        for node in company_nodes:
+            initial_pos[node] = (-900, company_y[node])
+        for node in holder_nodes:
+            initial_pos[node] = (900, holder_y[node])
 
     for node in company_nodes:
         attrs = graph.nodes[node]
@@ -251,8 +262,8 @@ def make_draggable_network_html(
             title=f"{attrs['label']}<br>type=company<br>degree={degree}",
             color=color,
             size=min(34, 10 + degree * 1.6),
-            x=-900,
-            y=company_y[node],
+            x=initial_pos[node][0],
+            y=initial_pos[node][1],
             physics=False,
         )
 
@@ -266,8 +277,8 @@ def make_draggable_network_html(
             title=f"{attrs['label']}<br>type=shareholder<br>degree={degree}",
             color=color,
             size=min(34, 10 + degree * 1.6),
-            x=900,
-            y=holder_y[node],
+            x=initial_pos[node][0],
+            y=initial_pos[node][1],
             physics=False,
         )
 
@@ -628,6 +639,11 @@ def render_sidebar(df: pd.DataFrame, can_refresh: bool) -> dict:
         exclude_nominees = st.toggle("Hide nominee / NVDR holders", value=False)
         only_cross_holders = st.toggle("Show only holders linked to >1 company", value=True)
         st.header("Graph")
+        layout_mode = st.radio(
+            "Initial layout",
+            options=["Left/Right Bipartite", "NX Graph Layout"],
+            index=0,
+        )
         show_labels = st.toggle("Show labels", value=True)
         max_holder_labels = st.slider("Top holder labels", 5, 40, 20, 1)
         focus_holder_name = st.selectbox("Manual focus shareholder", ["None", *holder_options], index=0)
@@ -648,6 +664,7 @@ def render_sidebar(df: pd.DataFrame, can_refresh: bool) -> dict:
         "selected_companies": selected_companies,
         "exclude_nominees": exclude_nominees,
         "only_cross_holders": only_cross_holders,
+        "layout_mode": layout_mode,
         "show_labels": show_labels,
         "max_holder_labels": max_holder_labels,
         "focus_holder_name": focus_holder_name,
@@ -736,8 +753,8 @@ def main() -> None:
 
     st.subheader("2D Bipartite Network")
     st.caption(
-        "Companies are fixed on the left, shareholders on the right. "
-        "The two sides are spread farther apart and vertically spaced to reduce node overlap."
+        "Choose either a fixed left/right bipartite layout or an NX graph-style layout, "
+        "then drag nodes freely to refine the view."
     )
     st.markdown(
         "`Green/Teal nodes` = listed companies in SET50, "
@@ -763,6 +780,7 @@ def main() -> None:
         make_draggable_network_html(
             graph,
             focus_node=focus_node,
+            layout_mode="nx" if controls["layout_mode"] == "NX Graph Layout" else "bipartite",
         ),
         height=1180,
         scrolling=False,
