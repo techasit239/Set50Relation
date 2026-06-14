@@ -304,22 +304,27 @@ def build_relationship_metrics(
         "Katz",
     ]
     score_maps = {metric: compute_centrality_scores(graph, metric) for metric in metric_names}
+    try:
+        pagerank_scores = nx.pagerank(graph)
+    except nx.NetworkXException:
+        pagerank_scores = {node: 0.0 for node in graph.nodes}
 
     rows: list[dict] = []
     selected_set = set(selected_nodes)
     for node, attrs in graph.nodes(data=True):
         rows.append(
             {
-                "label": attrs["label"],
-                "node_type": attrs["node_type"],
-                "is_selected": node in selected_set,
-                "degree": graph.degree(node),
+                "Node": attrs["label"],
+                "Type": attrs["node_type"],
+                "Selected": node in selected_set,
+                "Connections": graph.degree(node),
                 "Notion of Centrality": score_maps["Notion of Centrality"].get(node, 0.0),
                 "Degree": score_maps["Degree"].get(node, 0.0),
                 "Closeness": score_maps["Closeness"].get(node, 0.0),
                 "Betweenness": score_maps["Betweenness"].get(node, 0.0),
                 "Eigenvector": score_maps["Eigenvector"].get(node, 0.0),
                 "Katz": score_maps["Katz"].get(node, 0.0),
+                "PageRank": pagerank_scores.get(node, 0.0),
             }
         )
 
@@ -1198,8 +1203,8 @@ def main() -> None:
                     centrality_metric=relationship_metric,
                     selected_nodes=set(selected_relationship_nodes),
                     emphasized_edges=path_edges,
-                    allow_physics=False,
-                    nx_position_scale=0.74,
+                    allow_physics=controls["layout_mode"] == "NX Graph Layout",
+                    nx_position_scale=1.0,
                 ),
                 height=860,
                 scrolling=False,
@@ -1217,15 +1222,35 @@ def main() -> None:
                 selected_nodes=selected_relationship_nodes,
             )
             relationship_metrics = relationship_metrics.sort_values(
-                by=[relationship_metric, "degree"],
+                by=[relationship_metric, "Connections"],
                 ascending=[False, False],
             )
-            st.markdown("**Centrality on the relationship subgraph**")
-            st.dataframe(relationship_metrics, use_container_width=True, hide_index=True)
+            st.markdown("**Relationship Summary Table**")
+            st.caption(
+                "Each row is one node in the selected relationship subgraph, scored by major social network analysis metrics."
+            )
+            summary_columns = [
+                "Node",
+                "Type",
+                "Selected",
+                "Connections",
+                "Degree",
+                "Closeness",
+                "Betweenness",
+                "Eigenvector",
+                "Katz",
+                "PageRank",
+                "Notion of Centrality",
+            ]
+            st.dataframe(
+                relationship_metrics[summary_columns],
+                use_container_width=True,
+                hide_index=True,
+            )
 
             bridge_nodes = relationship_metrics[
-                ~relationship_metrics["is_selected"]
-            ].sort_values(by=[relationship_metric, "degree"], ascending=[False, False])
+                ~relationship_metrics["Selected"]
+            ].sort_values(by=[relationship_metric, "Connections"], ascending=[False, False])
             if not bridge_nodes.empty:
                 st.markdown("**Top bridge nodes**")
                 st.dataframe(bridge_nodes.head(15), use_container_width=True, hide_index=True)
