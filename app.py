@@ -984,29 +984,17 @@ def render_sidebar(df: pd.DataFrame, can_refresh: bool) -> dict:
         )
     with st.sidebar:
         st.header("Filters")
-        min_pct = st.slider("Min holding %", 0.0, 20.0, 0.5, 0.1)
+        min_pct = st.slider("Min holding %", 0.0, 20.0, 1.0, 0.1)
         selected_companies = st.multiselect("Companies", companies, default=companies)
-        exclude_nominees = st.toggle("Hide nominee / NVDR holders", value=False)
+        exclude_nominees = st.toggle("Hide nominee / NVDR holders", value=True)
         only_cross_holders = st.toggle("Show only holders linked to >1 company", value=True)
         st.header("Graph")
         layout_mode = st.radio(
             "Initial layout",
             options=["Left/Right Bipartite", "NX Graph Layout"],
-            index=0,
-        )
-        centrality_metric = st.selectbox(
-            "NX layout metric",
-            options=[
-                "Notion of Centrality",
-                "Degree",
-                "Closeness",
-                "Betweenness",
-                "Eigenvector",
-                "Katz",
-            ],
             index=1,
-            disabled=layout_mode != "NX Graph Layout",
         )
+        centrality_metric = "Degree"
         show_labels = st.toggle("Show labels", value=True)
         max_holder_labels = st.slider("Top holder labels", 5, 40, 20, 1)
         focus_holder_name = st.selectbox("Manual focus shareholder", ["None", *holder_options], index=0)
