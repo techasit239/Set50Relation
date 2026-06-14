@@ -5,6 +5,7 @@ import os
 import re
 import time
 import json
+from itertools import combinations
 from pathlib import Path
 from typing import Iterable
 
@@ -193,6 +194,138 @@ def build_bipartite_graph(df: pd.DataFrame) -> nx.Graph:
     return graph
 
 
+def compute_centrality_scores(graph: nx.Graph, metric_name: str) -> dict[str, float]:
+    if graph.number_of_nodes() == 0:
+        return {}
+    if graph.number_of_nodes() == 1:
+        return {next(iter(graph.nodes)): 1.0}
+
+    if metric_name == "Closeness":
+        return nx.closeness_centrality(graph)
+    if metric_name == "Betweenness":
+        return nx.betweenness_centrality(graph, normalized=True)
+    if metric_name == "Eigenvector":
+        try:
+            return nx.eigenvector_centrality(graph, max_iter=1000)
+        except nx.NetworkXException:
+            return nx.degree_centrality(graph)
+    if metric_name == "Katz":
+        try:
+            return nx.katz_centrality(graph, alpha=0.03, beta=1.0, max_iter=1000)
+        except nx.NetworkXException:
+            return nx.degree_centrality(graph)
+    if metric_name == "Notion of Centrality":
+        degree_scores = nx.degree_centrality(graph)
+        betweenness_scores = nx.betweenness_centrality(graph, normalized=True)
+        return {
+            node: (degree_scores.get(node, 0.0) * 0.6) + (betweenness_scores.get(node, 0.0) * 0.4)
+            for node in graph.nodes
+        }
+    return nx.degree_centrality(graph)
+
+
+def normalize_scores(raw_scores: dict[str, float], nodes: Iterable[str]) -> dict[str, float]:
+    node_list = list(nodes)
+    if not raw_scores:
+        return {node: 0.5 for node in node_list}
+    min_score = min(raw_scores.values(), default=0.0)
+    max_score = max(raw_scores.values(), default=1.0)
+    if math.isclose(max_score, min_score):
+        return {node: 0.5 for node in node_list}
+    return {
+        node: (raw_scores.get(node, min_score) - min_score) / (max_score - min_score)
+        for node in node_list
+    }
+
+
+def build_entity_options(graph: nx.Graph) -> tuple[dict[str, str], list[str]]:
+    option_map: dict[str, str] = {}
+    for node, attrs in sorted(
+        graph.nodes(data=True),
+        key=lambda item: (item[1]["node_type"], item[1]["label"]),
+    ):
+        prefix = "Company" if attrs["node_type"] == "company" else "Holder"
+        label = f"[{prefix}] {attrs['label']}"
+        option_map[label] = node
+    return option_map, list(option_map.keys())
+
+
+def summarize_relationship_paths(
+    graph: nx.Graph,
+    selected_nodes: list[str],
+) -> tuple[nx.Graph, list[dict], list[dict], set[tuple[str, str]]]:
+    path_rows: list[dict] = []
+    disconnected_rows: list[dict] = []
+    path_nodes: set[str] = set(selected_nodes)
+    path_edges: set[tuple[str, str]] = set()
+
+    for source, target in combinations(selected_nodes, 2):
+        try:
+            path = nx.shortest_path(graph, source=source, target=target)
+            labels = [graph.nodes[node]["label"] for node in path]
+            node_types = [graph.nodes[node]["node_type"] for node in path]
+            hop_count = max(len(path) - 1, 0)
+            path_rows.append(
+                {
+                    "source": graph.nodes[source]["label"],
+                    "target": graph.nodes[target]["label"],
+                    "hop_count": hop_count,
+                    "path": " -> ".join(labels),
+                    "path_node_types": " -> ".join(node_types),
+                }
+            )
+            path_nodes.update(path)
+            for left, right in zip(path, path[1:]):
+                path_edges.add(tuple(sorted((left, right))))
+        except nx.NetworkXNoPath:
+            disconnected_rows.append(
+                {
+                    "source": graph.nodes[source]["label"],
+                    "target": graph.nodes[target]["label"],
+                    "status": "No path under current filters",
+                }
+            )
+
+    if not path_nodes:
+        return nx.Graph(), path_rows, disconnected_rows, path_edges
+    return graph.subgraph(path_nodes).copy(), path_rows, disconnected_rows, path_edges
+
+
+def build_relationship_metrics(
+    graph: nx.Graph,
+    selected_nodes: list[str],
+) -> pd.DataFrame:
+    metric_names = [
+        "Notion of Centrality",
+        "Degree",
+        "Closeness",
+        "Betweenness",
+        "Eigenvector",
+        "Katz",
+    ]
+    score_maps = {metric: compute_centrality_scores(graph, metric) for metric in metric_names}
+
+    rows: list[dict] = []
+    selected_set = set(selected_nodes)
+    for node, attrs in graph.nodes(data=True):
+        rows.append(
+            {
+                "label": attrs["label"],
+                "node_type": attrs["node_type"],
+                "is_selected": node in selected_set,
+                "degree": graph.degree(node),
+                "Notion of Centrality": score_maps["Notion of Centrality"].get(node, 0.0),
+                "Degree": score_maps["Degree"].get(node, 0.0),
+                "Closeness": score_maps["Closeness"].get(node, 0.0),
+                "Betweenness": score_maps["Betweenness"].get(node, 0.0),
+                "Eigenvector": score_maps["Eigenvector"].get(node, 0.0),
+                "Katz": score_maps["Katz"].get(node, 0.0),
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
 def make_draggable_network_html(
     graph: nx.Graph,
     filtered_df: pd.DataFrame,
@@ -200,6 +333,8 @@ def make_draggable_network_html(
     max_nodes: int = 180,
     layout_mode: str = "bipartite",
     centrality_metric: str = "Degree",
+    selected_nodes: set[str] | None = None,
+    emphasized_edges: set[tuple[str, str]] | None = None,
 ) -> str:
     if graph.number_of_nodes() == 0:
         return "<p>No graph data available.</p>"
@@ -214,6 +349,8 @@ def make_draggable_network_html(
     highlighted_neighbors: set[str] = set()
     if focus_node and focus_node in graph:
         highlighted_neighbors = set(graph.neighbors(focus_node))
+    selected_nodes = selected_nodes or set()
+    emphasized_edges = emphasized_edges or set()
 
     company_nodes = sorted(
         [n for n, d in graph.nodes(data=True) if d["node_type"] == "company"],
@@ -242,59 +379,21 @@ def make_draggable_network_html(
         gap = (top * 2) / max(total - 1, 1)
         return {node: int(top - idx * gap) for idx, node in enumerate(nodes)}
 
-    def normalized_scores(metric_name: str) -> dict[str, float]:
-        if graph.number_of_nodes() == 1:
-            return {next(iter(graph.nodes)): 1.0}
-
-        if metric_name == "Closeness":
-            raw_scores = nx.closeness_centrality(graph)
-        elif metric_name == "Betweenness":
-            raw_scores = nx.betweenness_centrality(graph, normalized=True)
-        elif metric_name == "Eigenvector":
-            try:
-                raw_scores = nx.eigenvector_centrality(graph, max_iter=1000)
-            except nx.NetworkXException:
-                raw_scores = nx.degree_centrality(graph)
-        elif metric_name == "Katz":
-            try:
-                raw_scores = nx.katz_centrality(graph, alpha=0.03, beta=1.0, max_iter=1000)
-            except nx.NetworkXException:
-                raw_scores = nx.degree_centrality(graph)
-        elif metric_name == "Notion of Centrality":
-            degree_scores = nx.degree_centrality(graph)
-            betweenness_scores = nx.betweenness_centrality(graph, normalized=True)
-            raw_scores = {
-                node: (degree_scores.get(node, 0.0) * 0.6) + (betweenness_scores.get(node, 0.0) * 0.4)
-                for node in graph.nodes
-            }
-        else:
-            raw_scores = nx.degree_centrality(graph)
-
-        min_score = min(raw_scores.values(), default=0.0)
-        max_score = max(raw_scores.values(), default=1.0)
-        if math.isclose(max_score, min_score):
-            return {node: 0.5 for node in graph.nodes}
-
-        return {
-            node: (score - min_score) / (max_score - min_score)
-            for node, score in raw_scores.items()
-        }
-
     initial_pos: dict[str, tuple[int, int]] = {}
     if layout_mode == "nx":
-        scores = normalized_scores(centrality_metric)
+        scores = normalize_scores(compute_centrality_scores(graph, centrality_metric), graph.nodes)
         layout = nx.spring_layout(
             graph,
             seed=42,
-            k=3.8 / math.sqrt(max(graph.number_of_nodes(), 2)),
-            iterations=700,
-            scale=2.8,
+            k=2.2 / math.sqrt(max(graph.number_of_nodes(), 2)),
+            iterations=650,
+            scale=1.7,
         )
         for node, (x, y) in layout.items():
-            centrality_scale = 0.55 + ((1.0 - scores.get(node, 0.5)) * 1.45)
+            centrality_scale = 0.82 + ((1.0 - scores.get(node, 0.5)) * 0.68)
             initial_pos[node] = (
-                int(x * 2400 * centrality_scale),
-                int(y * 1500 * centrality_scale),
+                int(x * 1700 * centrality_scale),
+                int(y * 1050 * centrality_scale),
             )
     else:
         company_y = y_positions(company_nodes, 900)
@@ -307,7 +406,7 @@ def make_draggable_network_html(
     for node in company_nodes:
         attrs = graph.nodes[node]
         degree = graph.degree(node)
-        color = "#7C3AED" if node == focus_node else ("#0F766E" if not focus_node or node in highlighted_neighbors else "rgba(15,118,110,0.20)")
+        color = "#7C3AED" if node in selected_nodes or node == focus_node else ("#0F766E" if not focus_node or node in highlighted_neighbors else "rgba(15,118,110,0.20)")
         net.add_node(
             node,
             label=attrs["label"],
@@ -322,7 +421,7 @@ def make_draggable_network_html(
     for node in holder_nodes:
         attrs = graph.nodes[node]
         degree = graph.degree(node)
-        color = "#7C3AED" if node == focus_node else ("#C2410C" if not focus_node or node in highlighted_neighbors else "rgba(194,65,12,0.20)")
+        color = "#7C3AED" if node in selected_nodes or node == focus_node else ("#C2410C" if not focus_node or node in highlighted_neighbors else "rgba(194,65,12,0.20)")
         net.add_node(
             node,
             label=attrs["label"],
@@ -335,7 +434,11 @@ def make_draggable_network_html(
         )
 
     for left, right, edge_attrs in graph.edges(data=True):
-        if focus_node and focus_node in {left, right}:
+        edge_key = tuple(sorted((left, right)))
+        if edge_key in emphasized_edges:
+            color = "#2563EB"
+            width = 4
+        elif focus_node and focus_node in {left, right}:
             color = "#2563EB"
             width = 4
         elif focus_node:
@@ -968,6 +1071,7 @@ def main() -> None:
     top_holders_by_shares = holder_metrics.sort_values(
         ["total_shares", "total_holding_pct"], ascending=[False, False]
     )
+    entity_map, entity_labels = build_entity_options(graph)
 
     focus_node = None
     focused_holder_clean = None
@@ -1000,7 +1104,7 @@ def main() -> None:
     st.subheader("2D Bipartite Network")
     st.caption(
         "Choose either a fixed left/right bipartite layout or an NX graph-style layout, "
-        "then drag nodes freely to refine the view. The NX layout is tuned to spread nodes farther apart and can be reweighted by centrality metric."
+        "then drag nodes freely to refine the view. The NX layout is tuned to stay tighter and can be reweighted by centrality metric."
     )
     st.markdown(
         "`Green/Teal nodes` = listed companies in SET50, "
@@ -1036,6 +1140,87 @@ def main() -> None:
         height=1180,
         scrolling=False,
     )
+
+    st.subheader("Relationship Explorer")
+    st.caption(
+        "Select two or more companies and/or shareholders to trace the shortest relationship paths between them. "
+        "The app will surface bridge nodes on those paths and score them with the six centrality theories."
+    )
+    relationship_cols = st.columns([2.2, 1.2])
+    with relationship_cols[0]:
+        relationship_entities = st.multiselect(
+            "Choose companies / shareholders",
+            options=entity_labels,
+            default=[],
+            placeholder="Pick at least 2 nodes",
+        )
+    with relationship_cols[1]:
+        relationship_metric = st.selectbox(
+            "Sort bridge nodes by",
+            options=[
+                "Notion of Centrality",
+                "Degree",
+                "Closeness",
+                "Betweenness",
+                "Eigenvector",
+                "Katz",
+            ],
+            index=3,
+        )
+
+    if len(relationship_entities) >= 2:
+        selected_relationship_nodes = [entity_map[label] for label in relationship_entities]
+        relationship_graph, relationship_paths, disconnected_pairs, path_edges = summarize_relationship_paths(
+            graph,
+            selected_relationship_nodes,
+        )
+
+        if relationship_graph.number_of_nodes() == 0:
+            st.warning("No relationship graph could be built from the selected nodes.")
+        else:
+            st.caption(
+                f"Relationship subgraph: {relationship_graph.number_of_nodes()} nodes, "
+                f"{relationship_graph.number_of_edges()} edges."
+            )
+            components.html(
+                make_draggable_network_html(
+                    relationship_graph,
+                    filtered_df=filtered_df,
+                    layout_mode="nx" if controls["layout_mode"] == "NX Graph Layout" else "bipartite",
+                    centrality_metric=relationship_metric,
+                    selected_nodes=set(selected_relationship_nodes),
+                    emphasized_edges=path_edges,
+                ),
+                height=860,
+                scrolling=False,
+            )
+
+            if relationship_paths:
+                st.markdown("**Shortest paths found**")
+                st.dataframe(pd.DataFrame(relationship_paths), use_container_width=True, hide_index=True)
+            if disconnected_pairs:
+                st.markdown("**Pairs with no path**")
+                st.dataframe(pd.DataFrame(disconnected_pairs), use_container_width=True, hide_index=True)
+
+            relationship_metrics = build_relationship_metrics(
+                relationship_graph,
+                selected_nodes=selected_relationship_nodes,
+            )
+            relationship_metrics = relationship_metrics.sort_values(
+                by=[relationship_metric, "degree"],
+                ascending=[False, False],
+            )
+            st.markdown("**Centrality on the relationship subgraph**")
+            st.dataframe(relationship_metrics, use_container_width=True, hide_index=True)
+
+            bridge_nodes = relationship_metrics[
+                ~relationship_metrics["is_selected"]
+            ].sort_values(by=[relationship_metric, "degree"], ascending=[False, False])
+            if not bridge_nodes.empty:
+                st.markdown("**Top bridge nodes**")
+                st.dataframe(bridge_nodes.head(15), use_container_width=True, hide_index=True)
+    else:
+        st.info("Pick at least 2 nodes to inspect how they are connected through shared companies or shared shareholders.")
 
     left, right = st.columns(2)
     with left:
