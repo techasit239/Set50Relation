@@ -957,12 +957,18 @@ def filter_dataframe(
     df: pd.DataFrame,
     min_pct: float,
     selected_companies: Iterable[str],
+    excluded_companies: Iterable[str],
+    excluded_holders_clean: Iterable[str],
     exclude_nominees: bool,
     only_cross_holders: bool,
 ) -> pd.DataFrame:
     filtered = df[df["holding_pct"] >= min_pct].copy()
     if selected_companies:
         filtered = filtered[filtered["symbol"].isin(selected_companies)]
+    if excluded_companies:
+        filtered = filtered[~filtered["symbol"].isin(excluded_companies)]
+    if excluded_holders_clean:
+        filtered = filtered[~filtered["shareholder_clean"].isin(excluded_holders_clean)]
     if exclude_nominees:
         filtered = filtered[~filtered["is_nominee"]]
     if only_cross_holders and not filtered.empty:
@@ -975,17 +981,21 @@ def filter_dataframe(
 def render_sidebar(df: pd.DataFrame, can_refresh: bool) -> dict:
     companies = sorted(df["symbol"].dropna().unique().tolist()) if not df.empty else []
     holder_options = []
+    holder_label_to_clean: dict[str, str] = {}
     if not df.empty:
-        holder_options = (
+        holder_name_map = (
             df.groupby("shareholder_clean")["shareholder_name"]
             .agg(lambda series: series.value_counts().idxmax())
             .sort_values()
-            .tolist()
         )
+        holder_options = holder_name_map.tolist()
+        holder_label_to_clean = {label: clean for clean, label in holder_name_map.items()}
     with st.sidebar:
         st.header("Filters")
         min_pct = st.slider("Min holding %", 0.0, 20.0, 1.0, 0.1)
         selected_companies = st.multiselect("Companies", companies, default=companies)
+        excluded_companies = st.multiselect("Exclude companies", companies, default=[])
+        excluded_holders = st.multiselect("Exclude shareholders", holder_options, default=[])
         exclude_nominees = st.toggle("Hide nominee / NVDR holders", value=True)
         only_cross_holders = st.toggle("Show only holders linked to >1 company", value=True)
         st.header("Graph")
@@ -1013,6 +1023,12 @@ def render_sidebar(df: pd.DataFrame, can_refresh: bool) -> dict:
     return {
         "min_pct": min_pct,
         "selected_companies": selected_companies,
+        "excluded_companies": excluded_companies,
+        "excluded_holders_clean": [
+            holder_label_to_clean[label]
+            for label in excluded_holders
+            if label in holder_label_to_clean
+        ],
         "exclude_nominees": exclude_nominees,
         "only_cross_holders": only_cross_holders,
         "layout_mode": layout_mode,
@@ -1060,6 +1076,8 @@ def main() -> None:
         cached_df,
         min_pct=controls["min_pct"],
         selected_companies=controls["selected_companies"],
+        excluded_companies=controls["excluded_companies"],
+        excluded_holders_clean=controls["excluded_holders_clean"],
         exclude_nominees=controls["exclude_nominees"],
         only_cross_holders=controls["only_cross_holders"],
     )
