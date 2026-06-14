@@ -294,6 +294,7 @@ def summarize_relationship_paths(
 def build_relationship_metrics(
     graph: nx.Graph,
     selected_nodes: list[str],
+    include_nodes: Iterable[str] | None = None,
 ) -> pd.DataFrame:
     metric_names = [
         "Notion of Centrality",
@@ -311,7 +312,10 @@ def build_relationship_metrics(
 
     rows: list[dict] = []
     selected_set = set(selected_nodes)
+    include_set = set(include_nodes) if include_nodes is not None else set(graph.nodes)
     for node, attrs in graph.nodes(data=True):
+        if node not in include_set:
+            continue
         rows.append(
             {
                 "Node": attrs["label"],
@@ -1218,8 +1222,9 @@ def main() -> None:
                 st.dataframe(pd.DataFrame(disconnected_pairs), use_container_width=True, hide_index=True)
 
             relationship_metrics = build_relationship_metrics(
-                relationship_graph,
+                graph,
                 selected_nodes=selected_relationship_nodes,
+                include_nodes=relationship_graph.nodes,
             )
             relationship_metrics = relationship_metrics.sort_values(
                 by=[relationship_metric, "Connections"],
@@ -1227,7 +1232,7 @@ def main() -> None:
             )
             st.markdown("**Relationship Summary Table**")
             st.caption(
-                "Each row is one node in the selected relationship subgraph, scored by major social network analysis metrics."
+                "Each row is one node on the selected relationship paths, but every metric is calculated from the full filtered graph."
             )
             summary_columns = [
                 "Node",
