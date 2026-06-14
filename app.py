@@ -335,6 +335,8 @@ def make_draggable_network_html(
     centrality_metric: str = "Degree",
     selected_nodes: set[str] | None = None,
     emphasized_edges: set[tuple[str, str]] | None = None,
+    allow_physics: bool = False,
+    nx_position_scale: float = 1.0,
 ) -> str:
     if graph.number_of_nodes() == 0:
         return "<p>No graph data available.</p>"
@@ -392,8 +394,8 @@ def make_draggable_network_html(
         for node, (x, y) in layout.items():
             centrality_scale = 0.9 + ((1.0 - scores.get(node, 0.5)) * 0.38)
             initial_pos[node] = (
-                int(x * 1080 * centrality_scale),
-                int(y * 720 * centrality_scale),
+                int(x * 1080 * centrality_scale * nx_position_scale),
+                int(y * 720 * centrality_scale * nx_position_scale),
             )
     else:
         company_y = y_positions(company_nodes, 900)
@@ -415,7 +417,7 @@ def make_draggable_network_html(
             size=min(34, 10 + degree * 1.6),
             x=initial_pos[node][0],
             y=initial_pos[node][1],
-            physics=False,
+            physics=allow_physics,
         )
 
     for node in holder_nodes:
@@ -430,7 +432,7 @@ def make_draggable_network_html(
             size=min(34, 10 + degree * 1.6),
             x=initial_pos[node][0],
             y=initial_pos[node][1],
-            physics=False,
+            physics=allow_physics,
         )
 
     for left, right, edge_attrs in graph.edges(data=True):
@@ -455,8 +457,7 @@ def make_draggable_network_html(
             title=f"holding_pct={edge_attrs.get('weight', 0):.2f}%<br>shares={edge_attrs.get('shares', 0):,.0f}",
         )
 
-    net.set_options(
-        """
+    options_js = """
         const options = {
           "interaction": {
             "dragNodes": true,
@@ -466,16 +467,21 @@ def make_draggable_network_html(
             "navigationButtons": true
           },
           "physics": {
-            "enabled": false,
+            "enabled": __ALLOW_PHYSICS__,
             "barnesHut": {
-              "gravitationalConstant": -9000,
-              "centralGravity": 0.05,
-              "springLength": 190,
-              "springConstant": 0.03,
-              "damping": 0.16,
+              "gravitationalConstant": -2200,
+              "centralGravity": 0.015,
+              "springLength": 135,
+              "springConstant": 0.02,
+              "damping": 0.3,
               "avoidOverlap": 1
             },
-            "minVelocity": 0.75,
+            "stabilization": {
+              "enabled": __ALLOW_PHYSICS__,
+              "iterations": 140,
+              "fit": true
+            },
+            "minVelocity": 0.18,
             "solver": "barnesHut"
           },
           "nodes": {
@@ -492,8 +498,8 @@ def make_draggable_network_html(
             }
           }
         }
-        """
-    )
+        """.replace("__ALLOW_PHYSICS__", str(allow_physics).lower())
+    net.set_options(options_js)
     detail_rows = {}
     for symbol in sorted(filtered_df["symbol"].unique()):
         company_df = filtered_df[filtered_df["symbol"] == symbol].sort_values("holding_pct", ascending=False)
@@ -1136,6 +1142,8 @@ def main() -> None:
             focus_node=focus_node,
             layout_mode="nx" if controls["layout_mode"] == "NX Graph Layout" else "bipartite",
             centrality_metric=controls["centrality_metric"],
+            allow_physics=controls["layout_mode"] == "NX Graph Layout",
+            nx_position_scale=1.0,
         ),
         height=1180,
         scrolling=False,
@@ -1190,6 +1198,8 @@ def main() -> None:
                     centrality_metric=relationship_metric,
                     selected_nodes=set(selected_relationship_nodes),
                     emphasized_edges=path_edges,
+                    allow_physics=False,
+                    nx_position_scale=0.74,
                 ),
                 height=860,
                 scrolling=False,
