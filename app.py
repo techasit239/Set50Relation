@@ -199,6 +199,7 @@ def make_draggable_network_html(
     focus_node: str | None = None,
     max_nodes: int = 180,
     layout_mode: str = "bipartite",
+    centrality_metric: str = "Degree",
 ) -> str:
     if graph.number_of_nodes() == 0:
         return "<p>No graph data available.</p>"
@@ -241,8 +242,47 @@ def make_draggable_network_html(
         gap = (top * 2) / max(total - 1, 1)
         return {node: int(top - idx * gap) for idx, node in enumerate(nodes)}
 
+    def normalized_scores(metric_name: str) -> dict[str, float]:
+        if graph.number_of_nodes() == 1:
+            return {next(iter(graph.nodes)): 1.0}
+
+        if metric_name == "Closeness":
+            raw_scores = nx.closeness_centrality(graph)
+        elif metric_name == "Betweenness":
+            raw_scores = nx.betweenness_centrality(graph, normalized=True)
+        elif metric_name == "Eigenvector":
+            try:
+                raw_scores = nx.eigenvector_centrality(graph, max_iter=1000)
+            except nx.NetworkXException:
+                raw_scores = nx.degree_centrality(graph)
+        elif metric_name == "Katz":
+            try:
+                raw_scores = nx.katz_centrality(graph, alpha=0.03, beta=1.0, max_iter=1000)
+            except nx.NetworkXException:
+                raw_scores = nx.degree_centrality(graph)
+        elif metric_name == "Notion of Centrality":
+            degree_scores = nx.degree_centrality(graph)
+            betweenness_scores = nx.betweenness_centrality(graph, normalized=True)
+            raw_scores = {
+                node: (degree_scores.get(node, 0.0) * 0.6) + (betweenness_scores.get(node, 0.0) * 0.4)
+                for node in graph.nodes
+            }
+        else:
+            raw_scores = nx.degree_centrality(graph)
+
+        min_score = min(raw_scores.values(), default=0.0)
+        max_score = max(raw_scores.values(), default=1.0)
+        if math.isclose(max_score, min_score):
+            return {node: 0.5 for node in graph.nodes}
+
+        return {
+            node: (score - min_score) / (max_score - min_score)
+            for node, score in raw_scores.items()
+        }
+
     initial_pos: dict[str, tuple[int, int]] = {}
     if layout_mode == "nx":
+        scores = normalized_scores(centrality_metric)
         layout = nx.spring_layout(
             graph,
             seed=42,
@@ -251,7 +291,11 @@ def make_draggable_network_html(
             scale=2.8,
         )
         for node, (x, y) in layout.items():
-            initial_pos[node] = (int(x * 2400), int(y * 1500))
+            centrality_scale = 0.55 + ((1.0 - scores.get(node, 0.5)) * 1.45)
+            initial_pos[node] = (
+                int(x * 2400 * centrality_scale),
+                int(y * 1500 * centrality_scale),
+            )
     else:
         company_y = y_positions(company_nodes, 900)
         holder_y = y_positions(holder_nodes, 900)
@@ -832,6 +876,19 @@ def render_sidebar(df: pd.DataFrame, can_refresh: bool) -> dict:
             options=["Left/Right Bipartite", "NX Graph Layout"],
             index=0,
         )
+        centrality_metric = st.selectbox(
+            "NX layout metric",
+            options=[
+                "Notion of Centrality",
+                "Degree",
+                "Closeness",
+                "Betweenness",
+                "Eigenvector",
+                "Katz",
+            ],
+            index=1,
+            disabled=layout_mode != "NX Graph Layout",
+        )
         show_labels = st.toggle("Show labels", value=True)
         max_holder_labels = st.slider("Top holder labels", 5, 40, 20, 1)
         focus_holder_name = st.selectbox("Manual focus shareholder", ["None", *holder_options], index=0)
@@ -853,6 +910,7 @@ def render_sidebar(df: pd.DataFrame, can_refresh: bool) -> dict:
         "exclude_nominees": exclude_nominees,
         "only_cross_holders": only_cross_holders,
         "layout_mode": layout_mode,
+        "centrality_metric": centrality_metric,
         "show_labels": show_labels,
         "max_holder_labels": max_holder_labels,
         "focus_holder_name": focus_holder_name,
@@ -942,7 +1000,7 @@ def main() -> None:
     st.subheader("2D Bipartite Network")
     st.caption(
         "Choose either a fixed left/right bipartite layout or an NX graph-style layout, "
-        "then drag nodes freely to refine the view. The NX layout is tuned to spread nodes farther apart."
+        "then drag nodes freely to refine the view. The NX layout is tuned to spread nodes farther apart and can be reweighted by centrality metric."
     )
     st.markdown(
         "`Green/Teal nodes` = listed companies in SET50, "
@@ -973,6 +1031,7 @@ def main() -> None:
             filtered_df=filtered_df,
             focus_node=focus_node,
             layout_mode="nx" if controls["layout_mode"] == "NX Graph Layout" else "bipartite",
+            centrality_metric=controls["centrality_metric"],
         ),
         height=1180,
         scrolling=False,
