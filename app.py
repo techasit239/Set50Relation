@@ -396,15 +396,15 @@ def make_draggable_network_html(
         layout = nx.spring_layout(
             graph,
             seed=42,
-            k=1.45 / math.sqrt(max(graph.number_of_nodes(), 2)),
-            iterations=600,
-            scale=1.15,
+            k=2.35 / math.sqrt(max(graph.number_of_nodes(), 2)),
+            iterations=700,
+            scale=1.55,
         )
         for node, (x, y) in layout.items():
-            centrality_scale = 0.9 + ((1.0 - scores.get(node, 0.5)) * 0.38)
+            centrality_scale = 0.96 + ((1.0 - scores.get(node, 0.5)) * 0.62)
             initial_pos[node] = (
-                int(x * 1080 * centrality_scale * nx_position_scale),
-                int(y * 720 * centrality_scale * nx_position_scale),
+                int(x * 1520 * centrality_scale * nx_position_scale),
+                int(y * 980 * centrality_scale * nx_position_scale),
             )
     else:
         company_y = y_positions(company_nodes, 900)
@@ -478,16 +478,16 @@ def make_draggable_network_html(
           "physics": {
             "enabled": __ALLOW_PHYSICS__,
             "barnesHut": {
-              "gravitationalConstant": -2200,
-              "centralGravity": 0.015,
-              "springLength": 135,
-              "springConstant": 0.02,
-              "damping": 0.3,
-              "avoidOverlap": 1
+              "gravitationalConstant": -3600,
+              "centralGravity": 0.01,
+              "springLength": 175,
+              "springConstant": 0.018,
+              "damping": 0.34,
+              "avoidOverlap": 1.15
             },
             "stabilization": {
               "enabled": __ALLOW_PHYSICS__,
-              "iterations": 140,
+              "iterations": 180,
               "fit": true
             },
             "minVelocity": 0.18,
