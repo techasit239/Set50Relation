@@ -385,15 +385,15 @@ def make_draggable_network_html(
         layout = nx.spring_layout(
             graph,
             seed=42,
-            k=2.2 / math.sqrt(max(graph.number_of_nodes(), 2)),
-            iterations=650,
-            scale=1.7,
+            k=1.45 / math.sqrt(max(graph.number_of_nodes(), 2)),
+            iterations=600,
+            scale=1.15,
         )
         for node, (x, y) in layout.items():
-            centrality_scale = 0.82 + ((1.0 - scores.get(node, 0.5)) * 0.68)
+            centrality_scale = 0.9 + ((1.0 - scores.get(node, 0.5)) * 0.38)
             initial_pos[node] = (
-                int(x * 1700 * centrality_scale),
-                int(y * 1050 * centrality_scale),
+                int(x * 1080 * centrality_scale),
+                int(y * 720 * centrality_scale),
             )
     else:
         company_y = y_positions(company_nodes, 900)
