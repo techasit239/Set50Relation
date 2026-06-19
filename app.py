@@ -16,6 +16,51 @@ import streamlit as st
 import streamlit.components.v1 as components
 from pyvis.network import Network
 
+# ── Visual constants ──────────────────────────────────────────────────────────
+DARK_BG       = "#111827"
+DARK_PANEL    = "#1f2937"
+DARK_BORDER   = "#374151"
+DARK_TEXT     = "#f1f5f9"
+DARK_SUBTEXT  = "#94a3b8"
+
+COMPANY_COLOR   = "#06b6d4"   # cyan  – listed companies
+COMPANY_BORDER  = "#22d3ee"
+SELECTED_COLOR  = "#a78bfa"   # violet – focused / selected node
+
+# 12-colour palette for shareholder communities
+COMMUNITY_PALETTE = [
+    "#60a5fa",  # blue
+    "#34d399",  # emerald
+    "#fb923c",  # orange
+    "#f472b6",  # pink
+    "#fbbf24",  # amber
+    "#818cf8",  # indigo
+    "#22d3ee",  # cyan
+    "#f87171",  # red
+    "#4ade80",  # light-green
+    "#e879f9",  # fuchsia
+    "#a3e635",  # lime
+    "#38bdf8",  # sky
+]
+
+def community_color(community_id: int) -> str:
+    return COMMUNITY_PALETTE[community_id % len(COMMUNITY_PALETTE)]
+
+
+def detect_communities(graph: nx.Graph) -> dict[str, int]:
+    """Assign a community index to every node using greedy modularity."""
+    if graph.number_of_nodes() == 0:
+        return {}
+    try:
+        communities = list(nx.community.greedy_modularity_communities(graph, weight=None))
+        mapping: dict[str, int] = {}
+        for idx, comm in enumerate(communities):
+            for node in comm:
+                mapping[node] = idx
+        return mapping
+    except Exception:
+        return {n: 0 for n in graph.nodes}
+
 SET50_URL = "https://www.set.or.th/th/market/index/set50/overview"
 SHAREHOLDER_URL = "https://www.set.or.th/th/market/product/stock/quote/{symbol}/major-shareholders"
 CACHE_DIR = Path("work") / "cache"
@@ -251,13 +296,14 @@ def build_entity_options(graph: nx.Graph) -> tuple[dict[str, str], list[str]]:
 
 
 def edge_style_for_holding(holding_pct: float) -> tuple[str, int]:
+    """Return (hex_color, pixel_width) for an edge based on holding percentage."""
     if holding_pct >= 10:
-        return "#7C2D12", 3
+        return "#f87171", 4   # red    – major block (≥10 %)
     if holding_pct >= 5:
-        return "#C2410C", 2
+        return "#fb923c", 3   # orange – significant (5–9.99 %)
     if holding_pct >= 2:
-        return "#0891B2", 2
-    return "#94A3B8", 1
+        return "#60a5fa", 2   # blue   – moderate (2–4.99 %)
+    return "#475569", 1       # slate  – minor (< 2 %)
 
 
 def summarize_relationship_paths(
@@ -358,20 +404,23 @@ def make_draggable_network_html(
     nx_position_scale: float = 1.0,
 ) -> str:
     if graph.number_of_nodes() == 0:
-        return "<p>No graph data available.</p>"
+        return "<p style='color:#f1f5f9'>No graph data available.</p>"
 
     if graph.number_of_nodes() > max_nodes:
         company_nodes = [n for n, d in graph.nodes(data=True) if d["node_type"] == "company"]
-        holder_nodes = [n for n, d in graph.nodes(data=True) if d["node_type"] == "shareholder"]
-        holder_nodes = sorted(holder_nodes, key=lambda n: graph.degree(n), reverse=True)
-        keep = set(company_nodes) | set(holder_nodes[: max_nodes - len(company_nodes)])
+        holder_nodes  = [n for n, d in graph.nodes(data=True) if d["node_type"] == "shareholder"]
+        holder_nodes  = sorted(holder_nodes, key=lambda n: graph.degree(n), reverse=True)
+        keep  = set(company_nodes) | set(holder_nodes[: max_nodes - len(company_nodes)])
         graph = graph.subgraph(keep).copy()
 
     highlighted_neighbors: set[str] = set()
     if focus_node and focus_node in graph:
         highlighted_neighbors = set(graph.neighbors(focus_node))
-    selected_nodes = selected_nodes or set()
+    selected_nodes  = selected_nodes  or set()
     emphasized_edges = emphasized_edges or set()
+
+    # ── Community detection for shareholder colouring ────────────────────────
+    comm_map = detect_communities(graph)
 
     company_nodes = sorted(
         [n for n, d in graph.nodes(data=True) if d["node_type"] == "company"],
@@ -385,20 +434,19 @@ def make_draggable_network_html(
     net = Network(
         height="1150px",
         width="100%",
-        bgcolor="#FFFFFF",
-        font_color="#1F2937",
+        bgcolor=DARK_BG,
+        font_color=DARK_TEXT,
         directed=False,
         cdn_resources="in_line",
     )
 
-    def y_positions(nodes: list[str], top: int) -> dict[str, int]:
-        total = len(nodes)
-        if total == 0:
-            return {}
-        if total == 1:
-            return {nodes[0]: 0}
+    # ── Initial positions ────────────────────────────────────────────────────
+    def y_positions(nds: list[str], top: int) -> dict[str, int]:
+        total = len(nds)
+        if total == 0:   return {}
+        if total == 1:   return {nds[0]: 0}
         gap = (top * 2) / max(total - 1, 1)
-        return {node: int(top - idx * gap) for idx, node in enumerate(nodes)}
+        return {node: int(top - idx * gap) for idx, node in enumerate(nds)}
 
     initial_pos: dict[str, tuple[int, int]] = {}
     if layout_mode == "nx":
@@ -411,290 +459,338 @@ def make_draggable_network_html(
             scale=1.55,
         )
         for node, (x, y) in layout.items():
-            centrality_scale = 0.96 + ((1.0 - scores.get(node, 0.5)) * 0.62)
+            cs = 0.96 + ((1.0 - scores.get(node, 0.5)) * 0.62)
             initial_pos[node] = (
-                int(x * 1520 * centrality_scale * nx_position_scale),
-                int(y * 980 * centrality_scale * nx_position_scale),
+                int(x * 1520 * cs * nx_position_scale),
+                int(y * 980  * cs * nx_position_scale),
             )
     else:
         company_y = y_positions(company_nodes, 900)
-        holder_y = y_positions(holder_nodes, 900)
-        for node in company_nodes:
-            initial_pos[node] = (-900, company_y[node])
-        for node in holder_nodes:
-            initial_pos[node] = (900, holder_y[node])
+        holder_y  = y_positions(holder_nodes,  900)
+        for n in company_nodes:
+            initial_pos[n] = (-900, company_y[n])
+        for n in holder_nodes:
+            initial_pos[n] = ( 900, holder_y[n])
 
+    # ── Add company nodes ────────────────────────────────────────────────────
     for node in company_nodes:
-        attrs = graph.nodes[node]
+        attrs  = graph.nodes[node]
         degree = graph.degree(node)
-        color = "#7C3AED" if node in selected_nodes or node == focus_node else ("#0F766E" if not focus_node or node in highlighted_neighbors else "rgba(15,118,110,0.20)")
-        net.add_node(
-            node,
-            label=attrs["label"],
-            title=f"{attrs['label']}<br>type=company<br>degree={degree}",
-            color=color,
-            size=min(34, 10 + degree * 1.6),
-            x=initial_pos[node][0],
-            y=initial_pos[node][1],
-            physics=allow_physics,
-        )
+        is_selected = node in selected_nodes or node == focus_node
+        is_dimmed   = bool(focus_node) and node not in highlighted_neighbors and not is_selected
 
-    for node in holder_nodes:
-        attrs = graph.nodes[node]
-        degree = graph.degree(node)
-        color = "#7C3AED" if node in selected_nodes or node == focus_node else ("#C2410C" if not focus_node or node in highlighted_neighbors else "rgba(194,65,12,0.20)")
-        net.add_node(
-            node,
-            label=attrs["label"],
-            title=f"{attrs['label']}<br>type=shareholder<br>degree={degree}",
-            color=color,
-            size=min(34, 10 + degree * 1.6),
-            x=initial_pos[node][0],
-            y=initial_pos[node][1],
-            physics=allow_physics,
-        )
-
-    for left, right, edge_attrs in graph.edges(data=True):
-        edge_key = tuple(sorted((left, right)))
-        base_color, base_width = edge_style_for_holding(float(edge_attrs.get("weight", 0)))
-        if edge_key in emphasized_edges:
-            color = "#2563EB"
-            width = 4
-        elif focus_node and focus_node in {left, right}:
-            color = "#2563EB"
-            width = 4
-        elif focus_node:
-            color = "rgba(156,163,175,0.18)"
-            width = 1
+        if is_selected:
+            fill_color   = SELECTED_COLOR
+            border_color = SELECTED_COLOR
+        elif is_dimmed:
+            fill_color   = rgba(COMPANY_COLOR, 0.15)
+            border_color = rgba(COMPANY_BORDER, 0.2)
         else:
-            color = base_color
-            width = base_width
+            fill_color   = rgba(COMPANY_COLOR, 0.25)
+            border_color = COMPANY_BORDER
+
+        net.add_node(
+            node,
+            label=attrs["label"],
+            title=(
+                f"<b style='color:{COMPANY_BORDER}'>{attrs['label']}</b><br>"
+                f"Type: Company<br>Connections: {degree}"
+            ),
+            color={"background": fill_color, "border": border_color,
+                   "highlight": {"background": SELECTED_COLOR, "border": SELECTED_COLOR}},
+            shape="box",
+            size=min(36, 12 + degree * 1.4),
+            font={"color": DARK_TEXT, "size": 14, "bold": True},
+            borderWidth=2,
+            x=initial_pos[node][0],
+            y=initial_pos[node][1],
+            physics=allow_physics,
+        )
+
+    # ── Add holder nodes ─────────────────────────────────────────────────────
+    for node in holder_nodes:
+        attrs    = graph.nodes[node]
+        degree   = graph.degree(node)
+        base_col = community_color(comm_map.get(node, 0))
+        is_selected = node in selected_nodes or node == focus_node
+        is_dimmed   = bool(focus_node) and node not in highlighted_neighbors and not is_selected
+
+        if is_selected:
+            fill_color   = SELECTED_COLOR
+            border_color = SELECTED_COLOR
+        elif is_dimmed:
+            fill_color   = rgba(base_col, 0.12)
+            border_color = rgba(base_col, 0.18)
+        else:
+            fill_color   = rgba(base_col, 0.22)
+            border_color = base_col
+
+        net.add_node(
+            node,
+            label=attrs["label"],
+            title=(
+                f"<b style='color:{base_col}'>{attrs['label']}</b><br>"
+                f"Type: Shareholder<br>Connections: {degree}"
+            ),
+            color={"background": fill_color, "border": border_color,
+                   "highlight": {"background": SELECTED_COLOR, "border": SELECTED_COLOR}},
+            shape="dot",
+            size=min(34, 8 + degree * 2.0),
+            font={"color": DARK_TEXT, "size": 12},
+            borderWidth=2,
+            x=initial_pos[node][0],
+            y=initial_pos[node][1],
+            physics=allow_physics,
+        )
+
+    # ── Add edges ────────────────────────────────────────────────────────────
+    for left, right, edge_attrs in graph.edges(data=True):
+        edge_key   = tuple(sorted((left, right)))
+        pct        = float(edge_attrs.get("weight", 0))
+        base_color, base_width = edge_style_for_holding(pct)
+
+        if edge_key in emphasized_edges:
+            color, width = "#a78bfa", 5
+        elif focus_node and focus_node in {left, right}:
+            color, width = "#a78bfa", 4
+        elif focus_node:
+            color, width = rgba("#64748b", 0.1), 1
+        else:
+            color, width = base_color, base_width
+
         net.add_edge(
-            left,
-            right,
+            left, right,
             color=color,
             width=width,
-            title=f"holding_pct={edge_attrs.get('weight', 0):.2f}%<br>shares={edge_attrs.get('shares', 0):,.0f}",
+            title=(
+                f"<b>Holding: {pct:.2f}%</b><br>"
+                f"Shares: {edge_attrs.get('shares', 0):,.0f}"
+            ),
         )
 
-    options_js = """
-        const options = {
-          "interaction": {
+    # ── Pyvis options (dark, improved physics) ───────────────────────────────
+    options_js = f"""
+        const options = {{
+          "interaction": {{
             "dragNodes": true,
             "dragView": true,
             "zoomView": true,
             "hover": true,
-            "navigationButtons": true
-          },
-          "physics": {
-            "enabled": __ALLOW_PHYSICS__,
-            "barnesHut": {
-              "gravitationalConstant": -3600,
-              "centralGravity": 0.01,
-              "springLength": 175,
-              "springConstant": 0.018,
-              "damping": 0.34,
-              "avoidOverlap": 1.15
-            },
-            "stabilization": {
-              "enabled": __ALLOW_PHYSICS__,
-              "iterations": 180,
+            "navigationButtons": false,
+            "tooltipDelay": 150
+          }},
+          "physics": {{
+            "enabled": {"true" if allow_physics else "false"},
+            "barnesHut": {{
+              "gravitationalConstant": -5000,
+              "centralGravity": 0.15,
+              "springLength": 200,
+              "springConstant": 0.025,
+              "damping": 0.2,
+              "avoidOverlap": 0.8
+            }},
+            "stabilization": {{
+              "enabled": {"true" if allow_physics else "false"},
+              "iterations": 250,
               "fit": true
-            },
-            "minVelocity": 0.18,
+            }},
+            "minVelocity": 0.1,
             "solver": "barnesHut"
-          },
-          "nodes": {
-            "font": {
-              "size": 18,
-              "face": "Arial"
-            },
-            "shape": "dot"
-          },
-          "edges": {
-            "smooth": {
-              "enabled": true,
-              "type": "continuous"
-            }
-          }
-        }
-        """.replace("__ALLOW_PHYSICS__", str(allow_physics).lower())
+          }},
+          "nodes": {{
+            "font": {{ "size": 13, "face": "Inter, Arial, sans-serif" }},
+            "borderWidthSelected": 3
+          }},
+          "edges": {{
+            "smooth": {{ "enabled": true, "type": "continuous", "roundness": 0.2 }},
+            "selectionWidth": 3
+          }}
+        }}
+    """
     net.set_options(options_js)
-    detail_rows = {}
+
+    # ── Detail-panel data ────────────────────────────────────────────────────
+    detail_rows: dict = {}
     for symbol in sorted(filtered_df["symbol"].unique()):
-        company_df = filtered_df[filtered_df["symbol"] == symbol].sort_values("holding_pct", ascending=False)
+        cdf = filtered_df[filtered_df["symbol"] == symbol].sort_values("holding_pct", ascending=False)
         detail_rows[f"company::{symbol}"] = {
             "type": "company",
             "title": symbol,
-            "subtitle": f"{company_df['shareholder_clean'].nunique()} shareholders under current filters",
+            "color": COMPANY_BORDER,
+            "subtitle": f"{cdf['shareholder_clean'].nunique()} shareholders (current filter)",
             "columns": ["shareholder_name", "holding_pct", "shares", "as_of_date"],
-            "rows": company_df[
-                ["shareholder_name", "holding_pct", "shares", "as_of_date", "source_url"]
-            ].to_dict("records"),
+            "rows": cdf[["shareholder_name", "holding_pct", "shares", "as_of_date", "source_url"]].to_dict("records"),
         }
 
     holder_names = (
         filtered_df.groupby("shareholder_clean")["shareholder_name"]
-        .agg(lambda series: series.value_counts().idxmax())
+        .agg(lambda s: s.value_counts().idxmax())
         .to_dict()
     )
     for holder_clean, holder_name in holder_names.items():
-        holder_df = filtered_df[filtered_df["shareholder_clean"] == holder_clean].sort_values(
-            "holding_pct", ascending=False
-        )
-        detail_rows[f"holder::{holder_clean}"] = {
+        hdf = filtered_df[filtered_df["shareholder_clean"] == holder_clean].sort_values("holding_pct", ascending=False)
+        node_key = f"holder::{holder_clean}"
+        h_color  = community_color(comm_map.get(node_key, 0))
+        detail_rows[node_key] = {
             "type": "shareholder",
             "title": holder_name,
-            "subtitle": f"{holder_df['symbol'].nunique()} companies under current filters",
+            "color": h_color,
+            "subtitle": f"{hdf['symbol'].nunique()} companies (current filter)",
             "columns": ["symbol", "holding_pct", "shares", "as_of_date"],
-            "rows": holder_df[
-                ["symbol", "holding_pct", "shares", "as_of_date", "source_url"]
-            ].to_dict("records"),
+            "rows": hdf[["symbol", "holding_pct", "shares", "as_of_date", "source_url"]].to_dict("records"),
         }
 
     html = net.generate_html()
     details_json = json.dumps(detail_rows, ensure_ascii=False)
-    container_markup = """
+
+    container_markup = f"""
     <style>
-      body { margin: 0; font-family: Arial, sans-serif; background: #ffffff; }
-      .graph-shell { display: grid; grid-template-columns: minmax(0, 3fr) minmax(320px, 1fr); gap: 16px; align-items: start; }
-      .graph-panel { min-width: 0; }
-      .detail-panel {
-        border: 1px solid #e5e7eb; border-radius: 12px; padding: 14px; background: #f8fafc;
-        max-height: 1120px; overflow: auto; color: #111827;
-      }
-      .detail-panel h3 { margin: 0 0 6px 0; font-size: 18px; }
-      .detail-panel p { margin: 0 0 10px 0; color: #475569; font-size: 13px; }
-      .detail-panel table { width: 100%; border-collapse: collapse; font-size: 12px; }
-      .detail-panel th, .detail-panel td { border-bottom: 1px solid #e5e7eb; padding: 6px 4px; text-align: left; vertical-align: top; }
-      .detail-panel th { position: sticky; top: 0; background: #f8fafc; }
-      .detail-panel a { color: #2563eb; text-decoration: none; }
-      .detail-empty { color: #64748b; font-size: 13px; }
-      @media (max-width: 1100px) {
-        .graph-shell { grid-template-columns: 1fr; }
-        .detail-panel { max-height: 420px; }
-      }
+      *, *::before, *::after {{ box-sizing: border-box; }}
+      body {{ margin: 0; font-family: Inter, Arial, sans-serif; background: {DARK_BG}; color: {DARK_TEXT}; }}
+      .graph-shell {{
+        display: grid;
+        grid-template-columns: minmax(0, 3fr) minmax(300px, 1fr);
+        gap: 14px;
+        align-items: start;
+      }}
+      .graph-panel {{ min-width: 0; border-radius: 12px; overflow: hidden; }}
+      #mynetwork {{ border-radius: 12px; }}
+
+      /* ── Detail panel ── */
+      .detail-panel {{
+        border: 1px solid {DARK_BORDER};
+        border-radius: 12px;
+        padding: 16px;
+        background: {DARK_PANEL};
+        max-height: 1140px;
+        overflow: auto;
+        color: {DARK_TEXT};
+      }}
+      .detail-panel h3 {{ margin: 0 0 4px 0; font-size: 16px; font-weight: 700; }}
+      .detail-panel .sub {{ margin: 0 0 12px 0; color: {DARK_SUBTEXT}; font-size: 12px; }}
+      .detail-panel table {{ width: 100%; border-collapse: collapse; font-size: 12px; }}
+      .detail-panel th {{
+        position: sticky; top: 0;
+        background: {DARK_PANEL};
+        border-bottom: 1px solid {DARK_BORDER};
+        padding: 6px 4px; text-align: left;
+        color: {DARK_SUBTEXT}; font-weight: 600; font-size: 11px; text-transform: uppercase;
+      }}
+      .detail-panel td {{
+        border-bottom: 1px solid {DARK_BORDER};
+        padding: 6px 4px; vertical-align: top;
+      }}
+      .detail-panel tr:hover td {{ background: rgba(255,255,255,0.04); }}
+      .detail-panel a {{ color: #60a5fa; text-decoration: none; }}
+      .detail-empty {{ color: {DARK_SUBTEXT}; font-size: 13px; line-height: 1.6; }}
+
+      /* ── Legend ── */
+      .legend-bar {{
+        display: flex; gap: 18px; flex-wrap: wrap;
+        padding: 8px 14px;
+        background: {DARK_PANEL};
+        border: 1px solid {DARK_BORDER};
+        border-radius: 8px;
+        margin-bottom: 10px;
+        font-size: 12px;
+      }}
+      .leg-item {{ display: flex; align-items: center; gap: 6px; }}
+      .leg-dot {{ width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }}
+      .leg-box {{ width: 12px; height: 10px; border-radius: 2px; flex-shrink: 0; }}
+      .leg-line {{ width: 22px; height: 3px; border-radius: 2px; flex-shrink: 0; }}
+
+      @media (max-width: 1100px) {{
+        .graph-shell {{ grid-template-columns: 1fr; }}
+        .detail-panel {{ max-height: 420px; }}
+      }}
     </style>
+
+    <div class="legend-bar">
+      <div class="leg-item"><div class="leg-box" style="background:{rgba(COMPANY_COLOR,0.25)};border:2px solid {COMPANY_BORDER}"></div> Company (SET50)</div>
+      <div class="leg-item"><div class="leg-dot" style="background:#60a5fa"></div> Shareholders (coloured by community)</div>
+      <div class="leg-item"><div class="leg-dot" style="background:{SELECTED_COLOR}"></div> Selected / Focus</div>
+      <div class="leg-item"><div class="leg-line" style="background:#475569"></div> &lt;2%</div>
+      <div class="leg-item"><div class="leg-line" style="background:#60a5fa"></div> 2–5%</div>
+      <div class="leg-item"><div class="leg-line" style="background:#fb923c"></div> 5–10%</div>
+      <div class="leg-item"><div class="leg-line" style="background:#f87171"></div> ≥10%</div>
+    </div>
+
     <div class="graph-shell">
       <div class="graph-panel">
         <div id="mynetwork"></div>
       </div>
       <div class="detail-panel" id="detail-panel">
-        <h3>Selected Node Details</h3>
-        <p class="detail-empty">Click a node to inspect its connected companies or shareholders.</p>
+        <h3>Node Details</h3>
+        <p class="detail-empty">Click any node to see its connections and shareholding data here.</p>
       </div>
     </div>
     """
-    html = re.sub(r"<body>\s*<div class=\"card\"[^>]*>\s*<div id=\"mynetwork\"></div>\s*</div>", f"<body>{container_markup}", html, count=1, flags=re.S)
+    html = re.sub(
+        r"<body>\s*<div class=\"card\"[^>]*>\s*<div id=\"mynetwork\"></div>\s*</div>",
+        f"<body>{container_markup}",
+        html, count=1, flags=re.S,
+    )
+
     interaction_script = """
     <script type="text/javascript">
     (function() {
-      if (typeof network === "undefined" || typeof nodes === "undefined" || typeof edges === "undefined") {
-        return;
-      }
-      const detailData = __DETAILS_JSON__;
+      if (typeof network === "undefined") return;
+      const detailData  = __DETAILS_JSON__;
       const detailPanel = document.getElementById("detail-panel");
-
       const defaultNodeStyles = {};
       const defaultEdgeStyles = {};
 
       function snapshotDefaults() {
-        nodes.get().forEach((node) => {
-          defaultNodeStyles[node.id] = {
-            color: node.color,
-            size: node.size,
-          };
-        });
-        edges.get().forEach((edge) => {
-          defaultEdgeStyles[edge.id] = {
-            color: edge.color,
-            width: edge.width,
-          };
-        });
+        nodes.get().forEach(n  => { defaultNodeStyles[n.id] = { color: n.color, size: n.size }; });
+        edges.get().forEach(e  => { defaultEdgeStyles[e.id] = { color: e.color, width: e.width }; });
       }
 
       function resetStyles() {
-        const nodeUpdates = Object.entries(defaultNodeStyles).map(([id, style]) => ({
-          id,
-          color: style.color,
-          size: style.size,
-        }));
-        const edgeUpdates = Object.entries(defaultEdgeStyles).map(([id, style]) => ({
-          id,
-          color: style.color,
-          width: style.width,
-        }));
-        nodes.update(nodeUpdates);
-        edges.update(edgeUpdates);
-        if (detailPanel) {
-          detailPanel.innerHTML = '<h3>Selected Node Details</h3><p class="detail-empty">Click a node to inspect its connected companies or shareholders.</p>';
-        }
+        nodes.update(Object.entries(defaultNodeStyles).map(([id, s]) => ({ id, color: s.color, size: s.size })));
+        edges.update(Object.entries(defaultEdgeStyles).map(([id, s]) => ({ id, color: s.color, width: s.width })));
+        detailPanel.innerHTML = '<h3>Node Details</h3><p class="detail-empty">Click any node to see its connections and shareholding data here.</p>';
       }
 
-      function formatValue(key, value) {
-        if (key === "holding_pct" && value !== undefined && value !== null) return Number(value).toFixed(2);
-        if (key === "shares" && value !== undefined && value !== null) return Number(value).toLocaleString();
-        return value ?? "";
+      function fmt(key, val) {
+        if (key === "holding_pct") return (+(val||0)).toFixed(2) + " %";
+        if (key === "shares")      return Number(val||0).toLocaleString();
+        return val ?? "";
       }
 
       function renderDetails(nodeId) {
-        if (!detailPanel) return;
         const data = detailData[nodeId];
-        if (!data) {
-          detailPanel.innerHTML = '<h3>Selected Node Details</h3><p class="detail-empty">No detail found for this node.</p>';
-          return;
-        }
-        const headers = data.columns.map((c) => `<th>${c}</th>`).join("");
-        const rows = data.rows.map((row) => {
-          const cells = data.columns.map((c) => `<td>${formatValue(c, row[c])}</td>`).join("");
-          const src = row.source_url ? `<td><a href="${row.source_url}" target="_blank">source</a></td>` : "<td></td>";
+        if (!data) { detailPanel.innerHTML = '<h3>Node Details</h3><p class="detail-empty">No detail found.</p>'; return; }
+        const thead = data.columns.map(c => `<th>${c}</th>`).join("") + "<th></th>";
+        const tbody = data.rows.map(row => {
+          const cells = data.columns.map(c => `<td>${fmt(c, row[c])}</td>`).join("");
+          const src   = row.source_url ? `<td><a href="${row.source_url}" target="_blank">↗</a></td>` : "<td></td>";
           return `<tr>${cells}${src}</tr>`;
         }).join("");
         detailPanel.innerHTML = `
-          <h3>${data.title}</h3>
-          <p>${data.subtitle}</p>
-          <table>
-            <thead><tr>${headers}<th>source</th></tr></thead>
-            <tbody>${rows}</tbody>
-          </table>
-        `;
+          <h3 style="color:${data.color}">${data.title}</h3>
+          <p class="sub">${data.subtitle}</p>
+          <table><thead><tr>${thead}</tr></thead><tbody>${tbody}</tbody></table>`;
       }
 
       function highlightNode(nodeId) {
-        resetStyles();
-        const connectedEdgeIds = network.getConnectedEdges(nodeId);
-        const connectedNodeIds = network.getConnectedNodes(nodeId);
-
-        const edgeUpdates = edges.get().map((edge) => {
-          if (connectedEdgeIds.includes(edge.id)) {
-            return { id: edge.id, color: "#2563EB", width: 4 };
-          }
-          return { id: edge.id, color: "rgba(156,163,175,0.12)", width: 1 };
-        });
-
-        const nodeUpdates = nodes.get().map((node) => {
-          if (node.id === nodeId) {
-            return { id: node.id, color: "#7C3AED", size: Math.max(node.size || 10, 28) };
-          }
-          if (connectedNodeIds.includes(node.id)) {
-            return { id: node.id, color: defaultNodeStyles[node.id].color, size: defaultNodeStyles[node.id].size };
-          }
-          return { id: node.id, color: "rgba(203,213,225,0.35)", size: defaultNodeStyles[node.id].size };
-        });
-
-        edges.update(edgeUpdates);
-        nodes.update(nodeUpdates);
+        const connEdges = network.getConnectedEdges(nodeId);
+        const connNodes = new Set(network.getConnectedNodes(nodeId));
+        nodes.update(nodes.get().map(n => {
+          if (n.id === nodeId)          return { id: n.id, color: { background: "#a78bfa", border: "#a78bfa" }, size: Math.max((n.size||10)*1.3, 28) };
+          if (connNodes.has(n.id))      return { id: n.id, color: defaultNodeStyles[n.id].color, size: defaultNodeStyles[n.id].size };
+          return { id: n.id, color: "rgba(100,116,139,0.15)", size: defaultNodeStyles[n.id].size };
+        }));
+        edges.update(edges.get().map(e => {
+          if (connEdges.includes(e.id)) return { id: e.id, color: "#a78bfa", width: 4 };
+          return { id: e.id, color: "rgba(100,116,139,0.08)", width: 1 };
+        }));
         renderDetails(nodeId);
       }
 
       snapshotDefaults();
-
-      network.on("click", function(params) {
-        if (params.nodes && params.nodes.length > 0) {
-          highlightNode(params.nodes[0]);
-        } else {
-          resetStyles();
-        }
+      network.on("click", params => {
+        if (params.nodes?.length) highlightNode(params.nodes[0]);
+        else resetStyles();
       });
     })();
     </script>
@@ -805,6 +901,8 @@ def make_network_figure_2d(
     if focus_node and focus_node in graph:
         highlighted_neighbors = set(graph.neighbors(focus_node))
 
+    comm_map = detect_communities(graph)
+
     edge_traces: list[go.Scatter] = []
     if focus_node and focus_node in graph:
         dim_x: list[float] = []
@@ -872,15 +970,15 @@ def make_network_figure_2d(
         node_y.append(y)
         node_size.append(min(38, 10 + degree * 1.8))
         node_text.append(f"{label}<br>type={attrs['node_type']}<br>degree={degree}")
-        base_color = "#0F766E" if attrs["node_type"] == "company" else "#C2410C"
+        base_color = COMPANY_COLOR if attrs["node_type"] == "company" else community_color(comm_map.get(node, 0))
         if focus_node and node == focus_node:
-            node_color.append(rgba("#7C3AED", 1.0))
+            node_color.append(rgba(SELECTED_COLOR, 1.0))
         elif focus_node and node in highlighted_neighbors:
             node_color.append(rgba(base_color, 1.0))
         elif focus_node:
-            node_color.append(rgba(base_color, 0.18))
+            node_color.append(rgba(base_color, 0.15))
         else:
-            node_color.append(rgba(base_color, 0.9))
+            node_color.append(rgba(base_color, 0.85))
         should_label = attrs["node_type"] == "company" or node in labeled_holders
         node_label_text.append(label if show_labels and should_label else "")
         node_customdata.append([node, attrs["node_type"], label, str(degree)])
@@ -905,7 +1003,7 @@ def make_network_figure_2d(
             "middle left" if graph.nodes[node]["node_type"] == "company" else "middle right"
             for node in graph.nodes()
         ] if show_labels else None,
-        textfont=dict(size=10, color="#1F2937"),
+        textfont=dict(size=10, color=DARK_TEXT),
         texttemplate="%{text}",
         showlegend=False,
     )
@@ -913,12 +1011,13 @@ def make_network_figure_2d(
     figure = go.Figure(data=[*edge_traces, node_trace])
     figure.update_layout(
         margin=dict(l=20, r=20, t=10, b=10),
-        paper_bgcolor="white",
-        plot_bgcolor="white",
+        paper_bgcolor=DARK_BG,
+        plot_bgcolor=DARK_BG,
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title="", range=[-2.8, 2.8]),
         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title="", range=[-1.95, 1.95]),
         height=1100,
         showlegend=False,
+        font=dict(color=DARK_TEXT),
     )
     return figure
 
@@ -1255,17 +1354,9 @@ def main() -> None:
                 "Each row is one node on the selected relationship paths, but every metric is calculated from the full filtered graph."
             )
             summary_columns = [
-                "Node",
-                "Type",
-                "Selected",
-                "Connections",
-                "Degree",
-                "Closeness",
-                "Betweenness",
-                "Eigenvector",
-                "Katz",
-                "PageRank",
-                "Notion of Centrality",
+                "Node", "Type", "Selected", "Connections",
+                "Degree", "Closeness", "Betweenness", "Eigenvector",
+                "Katz", "PageRank", "Notion of Centrality",
             ]
             st.dataframe(
                 relationship_metrics[summary_columns],
