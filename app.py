@@ -63,9 +63,10 @@ def detect_communities(graph: nx.Graph) -> dict[str, int]:
 
 SET50_URL = "https://www.set.or.th/th/market/index/set50/overview"
 SHAREHOLDER_URL = "https://www.set.or.th/th/market/product/stock/quote/{symbol}/major-shareholders"
-CACHE_DIR = Path("work") / "cache"
-RAW_CACHE = CACHE_DIR / "set50_shareholders.csv"
-META_CACHE = CACHE_DIR / "set50_shareholders_meta.csv"
+CACHE_DIR    = Path("work") / "cache"
+RAW_CACHE    = CACHE_DIR / "set50_shareholders.csv"
+META_CACHE   = CACHE_DIR / "set50_shareholders_meta.csv"
+PRICE_CACHE  = CACHE_DIR / "set50_prices.json"
 
 NOMINEE_PATTERNS = [
     r"NVDR",
@@ -92,7 +93,7 @@ def is_running_on_streamlit_cloud() -> bool:
     return bool(os.getenv("STREAMLIT_SHARING_MODE") or os.getenv("STREAMLIT_CLOUD"))
 
 
-def live_refresh_enabled() -> bool:
+def is_live_refresh_enabled() -> bool:
     return os.getenv("ENABLE_LIVE_REFRESH", "0").lower() in {"1", "true", "yes"}
 
 
@@ -220,7 +221,52 @@ def load_cached_data() -> tuple[pd.DataFrame, pd.DataFrame]:
     return df, meta_df
 
 
-def build_bipartite_graph(df: pd.DataFrame) -> nx.Graph:
+def fetch_stock_prices(symbols: list[str]) -> dict[str, float]:
+    """Download latest closing prices for SET symbols via yfinance (.BK suffix).
+    Returns {symbol: price_thb}. Missing symbols are silently skipped."""
+    try:
+        import yfinance as yf
+    except ImportError:
+        return {}
+    tickers = [f"{s}.BK" for s in symbols]
+    try:
+        raw = yf.download(
+            tickers,
+            period="5d",          # grab a few days so weekends don't break it
+            auto_adjust=True,
+            progress=False,
+            threads=True,
+        )
+        if raw.empty:
+            return {}
+        close = raw["Close"] if "Close" in raw.columns else raw
+        latest = close.ffill().iloc[-1]   # forward-fill then take most recent
+        prices: dict[str, float] = {}
+        for symbol in symbols:
+            ticker = f"{symbol}.BK"
+            if ticker in latest.index and not pd.isna(latest[ticker]):
+                prices[symbol] = float(latest[ticker])
+        return prices
+    except Exception:
+        return {}
+
+
+def load_price_cache() -> dict[str, float]:
+    if PRICE_CACHE.exists():
+        try:
+            return json.loads(PRICE_CACHE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def save_price_cache(prices: dict[str, float]) -> None:
+    ensure_cache_dir()
+    PRICE_CACHE.write_text(json.dumps(prices, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def build_bipartite_graph(df: pd.DataFrame, prices: dict[str, float] | None = None) -> nx.Graph:
+    prices = prices or {}
     graph = nx.Graph()
     for symbol in sorted(df["symbol"].unique()):
         graph.add_node(f"company::{symbol}", label=symbol, node_type="company")
@@ -230,11 +276,14 @@ def build_bipartite_graph(df: pd.DataFrame) -> nx.Graph:
         )
         graph.add_node(f"holder::{holder}", label=display_name, node_type="shareholder")
     for row in df.itertuples(index=False):
+        price = prices.get(row.symbol, 0.0)
+        market_value = float(row.shares) * price   # THB; 0 if price unknown
         graph.add_edge(
             f"holder::{row.shareholder_clean}",
             f"company::{row.symbol}",
             weight=float(row.holding_pct),
             shares=float(row.shares),
+            market_value=market_value,
         )
     return graph
 
@@ -304,6 +353,51 @@ def edge_style_for_holding(holding_pct: float) -> tuple[str, int]:
     if holding_pct >= 2:
         return "#60a5fa", 2   # blue   – moderate (2–4.99 %)
     return "#475569", 1       # slate  – minor (< 2 %)
+
+
+def compute_market_value_edge_styles(
+    graph: nx.Graph,
+    min_width: float = 1.0,
+    max_width: float = 12.0,
+) -> dict[tuple[str, str], tuple[str, float]]:
+    """Compute (color, width) for every edge using log10(market_value) scaling.
+
+    Color tiers (THB):
+      < 100M      → slate  #475569
+      100M–1B     → blue   #60a5fa
+      1B–10B      → orange #fb923c
+      ≥ 10B       → red    #f87171
+    Width is log-scaled across all edges with known market_value > 0.
+    Edges without price data fall back to width=1, color=slate.
+    """
+    values = {
+        (u, v): data["market_value"]
+        for u, v, data in graph.edges(data=True)
+        if data.get("market_value", 0) > 0
+    }
+    if not values:
+        return {}
+
+    log_vals = {k: math.log10(v) for k, v in values.items()}
+    lo, hi = min(log_vals.values()), max(log_vals.values())
+    span = hi - lo if hi > lo else 1.0
+
+    result: dict[tuple[str, str], tuple[str, float]] = {}
+    for (u, v), mv in values.items():
+        # width: log-scale mapped to [min_width, max_width]
+        w = min_width + (log_vals[(u, v)] - lo) / span * (max_width - min_width)
+        # color tier
+        if mv >= 10_000_000_000:       # ≥ 10B
+            color = "#f87171"
+        elif mv >= 1_000_000_000:      # 1B – 10B
+            color = "#fb923c"
+        elif mv >= 100_000_000:        # 100M – 1B
+            color = "#60a5fa"
+        else:                          # < 100M
+            color = "#475569"
+        result[(u, v)] = (color, round(w, 2))
+        result[(v, u)] = (color, round(w, 2))   # undirected
+    return result
 
 
 def summarize_relationship_paths(
@@ -402,6 +496,7 @@ def make_draggable_network_html(
     emphasized_edges: set[tuple[str, str]] | None = None,
     allow_physics: bool = False,
     nx_position_scale: float = 1.0,
+    edge_size_metric: str = "holding_pct",   # "holding_pct" | "market_value"
 ) -> str:
     if graph.number_of_nodes() == 0:
         return "<p style='color:#f1f5f9'>No graph data available.</p>"
@@ -543,11 +638,20 @@ def make_draggable_network_html(
             physics=allow_physics,
         )
 
+    # ── Pre-compute market-value widths (once, across all edges) ─────────────
+    mv_widths = compute_market_value_edge_styles(graph) if edge_size_metric == "market_value" else {}
+
     # ── Add edges ────────────────────────────────────────────────────────────
     for left, right, edge_attrs in graph.edges(data=True):
         edge_key   = tuple(sorted((left, right)))
         pct        = float(edge_attrs.get("weight", 0))
-        base_color, base_width = edge_style_for_holding(pct)
+        mv         = float(edge_attrs.get("market_value", 0))
+        shares     = float(edge_attrs.get("shares", 0))
+
+        if edge_size_metric == "market_value" and (left, right) in mv_widths:
+            base_color, base_width = mv_widths[(left, right)]
+        else:
+            base_color, base_width = edge_style_for_holding(pct)
 
         if edge_key in emphasized_edges:
             color, width = "#a78bfa", 5
@@ -558,13 +662,15 @@ def make_draggable_network_html(
         else:
             color, width = base_color, base_width
 
+        mv_label = f"฿{mv/1e9:.2f}B" if mv >= 1e9 else (f"฿{mv/1e6:.1f}M" if mv >= 1e6 else "ไม่มีราคา")
         net.add_edge(
             left, right,
             color=color,
             width=width,
             title=(
                 f"<b>Holding: {pct:.2f}%</b><br>"
-                f"Shares: {edge_attrs.get('shares', 0):,.0f}"
+                f"Shares: {shares:,.0f}<br>"
+                f"Market value: {mv_label}"
             ),
         )
 
@@ -643,6 +749,24 @@ def make_draggable_network_html(
     html = net.generate_html()
     details_json = json.dumps(detail_rows, ensure_ascii=False)
 
+    # Build legend HTML separately (avoids nested triple-quotes in f-string)
+    if edge_size_metric == "market_value":
+        edge_legend_html = (
+            '<div class="leg-item"><div class="leg-line" style="background:#475569"></div> &lt;100M฿</div>'
+            '<div class="leg-item"><div class="leg-line" style="background:#60a5fa"></div> 100M–1B฿</div>'
+            '<div class="leg-item"><div class="leg-line" style="background:#fb923c"></div> 1B–10B฿</div>'
+            '<div class="leg-item"><div class="leg-line" style="background:#f87171"></div> ≥10B฿</div>'
+            '<div class="leg-item" style="margin-left:8px;opacity:.6;font-size:11px">ขนาดเส้น = มูลค่าการถือ (log scale)</div>'
+        )
+    else:
+        edge_legend_html = (
+            '<div class="leg-item"><div class="leg-line" style="background:#475569"></div> &lt;2%</div>'
+            '<div class="leg-item"><div class="leg-line" style="background:#60a5fa"></div> 2–5%</div>'
+            '<div class="leg-item"><div class="leg-line" style="background:#fb923c"></div> 5–10%</div>'
+            '<div class="leg-item"><div class="leg-line" style="background:#f87171"></div> ≥10%</div>'
+            '<div class="leg-item" style="margin-left:8px;opacity:.6;font-size:11px">ขนาดเส้น = สัดส่วนการถือ</div>'
+        )
+
     container_markup = f"""
     <style>
       *, *::before, *::after {{ box-sizing: border-box; }}
@@ -709,10 +833,7 @@ def make_draggable_network_html(
       <div class="leg-item"><div class="leg-box" style="background:{rgba(COMPANY_COLOR,0.25)};border:2px solid {COMPANY_BORDER}"></div> Company (SET50)</div>
       <div class="leg-item"><div class="leg-dot" style="background:#60a5fa"></div> Shareholders (coloured by community)</div>
       <div class="leg-item"><div class="leg-dot" style="background:{SELECTED_COLOR}"></div> Selected / Focus</div>
-      <div class="leg-item"><div class="leg-line" style="background:#475569"></div> &lt;2%</div>
-      <div class="leg-item"><div class="leg-line" style="background:#60a5fa"></div> 2–5%</div>
-      <div class="leg-item"><div class="leg-line" style="background:#fb923c"></div> 5–10%</div>
-      <div class="leg-item"><div class="leg-line" style="background:#f87171"></div> ≥10%</div>
+      {edge_legend_html}
     </div>
 
     <div class="graph-shell">
@@ -1114,6 +1235,16 @@ def render_sidebar(df: pd.DataFrame, can_refresh: bool) -> dict:
             options=["Left/Right Bipartite", "NX Graph Layout"],
             index=1,
         )
+        st.subheader("Edge size")
+        edge_size_metric = st.radio(
+            "ขนาดเส้นแทน",
+            options=["สัดส่วนการถือ (%)", "มูลค่าการถือ (shares × ราคา)"],
+            index=0,
+        )
+        refresh_prices = st.button(
+            "🔄 อัปเดตราคาหุ้น (yfinance)",
+            help="ดึงราคาปิดล่าสุดจาก yfinance (.BK) ใช้สำหรับคำนวณมูลค่าการถือ",
+        )
         centrality_metric = "Degree"
         show_labels = st.toggle("Show labels", value=True)
         max_holder_labels = st.slider("Top holder labels", 5, 40, 20, 1)
@@ -1149,6 +1280,8 @@ def render_sidebar(df: pd.DataFrame, can_refresh: bool) -> dict:
         "clear_selected_node": clear_selected_node,
         "force_refresh": force_refresh,
         "sample_limit": sample_limit,
+        "edge_size_metric": "market_value" if "มูลค่า" in edge_size_metric else "holding_pct",
+        "refresh_prices": refresh_prices,
     }
 
 
@@ -1159,7 +1292,7 @@ def main() -> None:
 
     ensure_cache_dir()
     cloud_mode = is_running_on_streamlit_cloud()
-    can_refresh = (not cloud_mode) and live_refresh_enabled()
+    can_refresh = (not cloud_mode) and is_live_refresh_enabled()
 
     cached_df, meta_df = load_cached_data()
     controls = render_sidebar(cached_df, can_refresh=can_refresh)
@@ -1167,6 +1300,23 @@ def main() -> None:
     if controls["force_refresh"]:
         with st.spinner("Scraping SET50 constituents and major shareholders from SET..."):
             cached_df, meta_df = refresh_data(limit=int(controls["sample_limit"]))
+
+    # ── Stock prices (for market-value edge sizing) ───────────────────────────
+    prices = load_price_cache()
+    if controls["refresh_prices"] or (not prices and controls["edge_size_metric"] == "market_value"):
+        with st.spinner("กำลังดึงราคาหุ้นจาก yfinance..."):
+            symbols = cached_df["symbol"].dropna().unique().tolist() if not cached_df.empty else []
+            prices  = fetch_stock_prices(symbols)
+            if prices:
+                save_price_cache(prices)
+                st.success(f"อัปเดตราคาสำเร็จ — {len(prices)} หุ้น")
+            else:
+                st.warning("ไม่สามารถดึงราคาได้ (ตรวจสอบ internet / yfinance)")
+    if prices:
+        price_date = "ล่าสุด" if not PRICE_CACHE.exists() else time.strftime(
+            "%d %b %Y %H:%M", time.localtime(PRICE_CACHE.stat().st_mtime)
+        )
+        st.caption(f"ราคาหุ้น: {len(prices)} ตัว  •  อัปเดต {price_date}")
 
     if cached_df.empty:
         st.error(
@@ -1196,7 +1346,7 @@ def main() -> None:
         st.warning("No rows match the current filters.")
         return
 
-    graph = build_bipartite_graph(filtered_df)
+    graph = build_bipartite_graph(filtered_df, prices=prices)
     holder_metrics = compute_holder_metrics(filtered_df)
     company_projection = compute_company_projection(filtered_df)
     top_holders_by_shares = holder_metrics.sort_values(
@@ -1240,13 +1390,15 @@ def main() -> None:
     st.markdown(
         "`Green/Teal nodes` = listed companies in SET50, "
         "`Orange nodes` = shareholders, "
-        "`Gray/Blue/Orange/Brown lines` = shareholding relationships colored by holding percentage, "
-        "`Purple node` = focused shareholder, "
-        "`Blue lines` = links from the focused shareholder to connected companies, "
-        "`Larger circles` = nodes with more connections."
+        "`Cyan box nodes` = listed companies in SET50, "
+        "`Coloured dot nodes` = shareholders (coloured by community), "
+        "`Purple node` = focused / selected node, "
+        "`Blue lines` = links from the focused node."
     )
     st.caption(
-        "Edge colors: `gray` < 2%, `blue` 2-4.99%, `orange` 5-9.99%, `brown` 10%+."
+        "Edge colors (holding %): gray < 2%, blue 2–5%, orange 5–10%, red ≥10%. "
+        "Edge colors (market value): gray < 100M฿, blue 100M–1B฿, orange 1B–10B฿, red ≥10B฿. "
+        "Edge width is scaled by the chosen metric."
     )
     if focus_node:
         node_type, raw_id = focus_node.split("::", 1)
@@ -1272,6 +1424,7 @@ def main() -> None:
             centrality_metric=controls["centrality_metric"],
             allow_physics=controls["layout_mode"] == "NX Graph Layout",
             nx_position_scale=1.0,
+            edge_size_metric=controls["edge_size_metric"],
         ),
         height=1180,
         scrolling=False,
@@ -1328,6 +1481,7 @@ def main() -> None:
                     emphasized_edges=path_edges,
                     allow_physics=controls["layout_mode"] == "NX Graph Layout",
                     nx_position_scale=1.0,
+                    edge_size_metric=controls["edge_size_metric"],
                 ),
                 height=860,
                 scrolling=False,
