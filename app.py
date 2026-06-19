@@ -1209,6 +1209,267 @@ def filter_dataframe(
     return filtered
 
 
+def render_macro_network_page() -> None:
+    """Render the standalone macro-factor → SET Index network page."""
+    st.title("ปัจจัยที่ส่งผลต่อตลาดหุ้นไทย")
+    st.caption(
+        "กราฟแสดงความสัมพันธ์ระหว่างปัจจัยมหภาคและตลาดหุ้นไทย (SET Index) "
+        "ลากโหนดได้ · hover เพื่อดูคำอธิบาย · สีเส้น = ทิศทาง (+/−/mixed)"
+    )
+
+    macro_html = """<!DOCTYPE html>
+<html>
+<head>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#111827;color:#f1f5f9;font-family:system-ui,sans-serif;overflow:hidden}
+  canvas{display:block}
+  #tt{position:fixed;background:#1f2937;border:1px solid #374151;border-radius:8px;
+      padding:10px 14px;font-size:13px;pointer-events:none;display:none;max-width:230px;
+      z-index:100;line-height:1.5}
+  #tt .tn{font-weight:700;font-size:14px;margin-bottom:3px}
+  #tt .tc{font-size:11px;opacity:.6;margin-bottom:5px;text-transform:uppercase;letter-spacing:.05em}
+  #leg{position:fixed;bottom:14px;left:14px;background:#1f2937;border:1px solid #374151;
+       border-radius:8px;padding:10px 14px;font-size:12px;z-index:100}
+  #leg .lt{font-weight:600;margin-bottom:7px;opacity:.6;font-size:11px;text-transform:uppercase}
+  .li{display:flex;align-items:center;gap:7px;margin-bottom:4px}
+  .ld{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+  .lb{width:12px;height:10px;border-radius:2px;flex-shrink:0}
+  #leg2{position:fixed;bottom:14px;right:14px;background:#1f2937;border:1px solid #374151;
+        border-radius:8px;padding:10px 14px;font-size:12px;z-index:100}
+  .ll{width:26px;height:3px;border-radius:2px;flex-shrink:0}
+  #hint{position:fixed;top:12px;left:50%;transform:translateX(-50%);
+        background:#1f2937;border:1px solid #374151;border-radius:20px;
+        padding:5px 14px;font-size:12px;opacity:.55;pointer-events:none;white-space:nowrap}
+</style>
+</head>
+<body>
+<div id="hint">hover บนโหนดเพื่อดูรายละเอียด · ลาก nodes ได้</div>
+<canvas id="c"></canvas>
+<div id="tt"></div>
+<div id="leg">
+  <div class="lt">หมวดหมู่</div>
+  <div class="li"><div class="ld" style="background:#f59e42"></div>ตลาดต่างประเทศ</div>
+  <div class="li"><div class="ld" style="background:#60a5fa"></div>มหภาคในประเทศ</div>
+  <div class="li"><div class="ld" style="background:#34d399"></div>ปัจจัยเฉพาะไทย</div>
+  <div class="li"><div class="ld" style="background:#a78bfa"></div>สินค้าโภคภัณฑ์</div>
+  <div class="li"><div class="ld" style="background:#fb7185"></div>Sentiment</div>
+  <div class="li"><div class="lb" style="background:#fbbf24;border:2px solid #fff"></div>SET Index</div>
+</div>
+<div id="leg2">
+  <div class="lt">ทิศทาง</div>
+  <div class="li"><div class="ll" style="background:#34d399"></div>บวก (+)</div>
+  <div class="li"><div class="ll" style="background:#fb7185"></div>ลบ (−)</div>
+  <div class="li"><div class="ll" style="background:#94a3b8"></div>Mixed (±)</div>
+</div>
+<script>
+const C=document.getElementById('c'),ctx=C.getContext('2d');
+let W,H;
+function resize(){W=C.width=window.innerWidth;H=C.height=window.innerHeight}
+resize();window.addEventListener('resize',resize);
+
+const cats={foreign:{color:'#f59e42'},macro:{color:'#60a5fa'},thai:{color:'#34d399'},
+            commodity:{color:'#a78bfa'},sentiment:{color:'#fb7185'},center:{color:'#fbbf24'}};
+
+const nodes=[
+  {id:'SET',label:'SET Index',cat:'center',r:32,desc:'ดัชนีตลาดหลักทรัพย์ไทย\\nเป้าหมายที่เราต้องการวิเคราะห์',x:0,y:0,vx:0,vy:0},
+  {id:'SP500',label:'S&P 500',cat:'foreign',r:20,desc:'ตลาดสหรัฐ — correlation สูงช่วง risk-off\\nมักนำ SET ราว 1 วัน',x:0,y:0,vx:0,vy:0},
+  {id:'HSI',label:'Hang Seng',cat:'foreign',r:18,desc:'ตลาดฮ่องกง/จีน\\nส่งผลผ่านท่องเที่ยวและส่งออก',x:0,y:0,vx:0,vy:0},
+  {id:'CSI300',label:'CSI 300',cat:'foreign',r:16,desc:'ตลาดหุ้นจีน A-shares\\nความเชื่อมั่นต่อเศรษฐกิจจีน',x:0,y:0,vx:0,vy:0},
+  {id:'DXY',label:'Dollar\\nIndex (DXY)',cat:'foreign',r:18,desc:'ความแข็งของดอลลาร์\\nDXY แข็ง → เงินไหลออก EM',x:0,y:0,vx:0,vy:0},
+  {id:'VIX',label:'VIX\\n(Fear)',cat:'sentiment',r:19,desc:'ดัชนีความกลัวตลาดโลก\\nVIX สูง → เงินออกจาก EM',x:0,y:0,vx:0,vy:0},
+  {id:'USDTHB',label:'USD/THB',cat:'macro',r:19,desc:'ค่าเงินบาทต่อดอลลาร์\\nบาทอ่อน → กดดัน import cost',x:0,y:0,vx:0,vy:0},
+  {id:'BOT',label:'ดอกเบี้ย\\nBoT',cat:'macro',r:17,desc:'อัตราดอกเบี้ยนโยบาย ธปท.\\nขึ้นดอก → ต้นทุนทุนสูง',x:0,y:0,vx:0,vy:0},
+  {id:'CPI',label:'เงินเฟ้อ\\n(CPI)',cat:'macro',r:16,desc:'ดัชนีราคาผู้บริโภค\\nเงินเฟ้อสูง → BoT ขึ้นดอก',x:0,y:0,vx:0,vy:0},
+  {id:'GDP',label:'GDP Growth',cat:'macro',r:17,desc:'อัตราการเติบโต GDP ไทย\\nGDP ดี → กำไรบริษัทสูง',x:0,y:0,vx:0,vy:0},
+  {id:'TOURIST',label:'นักท่องเที่ยว\\nต่างชาติ',cat:'thai',r:19,desc:'จำนวนนักท่องเที่ยวต่างชาติ\\nส่งผลตรงต่อ tourism stocks',x:0,y:0,vx:0,vy:0},
+  {id:'FUND',label:'Fund Flow\\nต่างชาติ',cat:'thai',r:21,desc:'เงิน net buy/sell ต่างชาติ\\nตัวที่ lead/lag SET ได้ชัด',x:0,y:0,vx:0,vy:0},
+  {id:'PTT',label:'PTT Weight',cat:'thai',r:16,desc:'PTT + กลุ่มมี weight สูงใน SET\\nราคาน้ำมันกระทบ SET ผ่าน PTT',x:0,y:0,vx:0,vy:0},
+  {id:'EXPORT',label:'มูลค่า\\nส่งออก',cat:'thai',r:15,desc:'ปริมาณส่งออกรายเดือน\\nกระทบ manufacturing/agri stocks',x:0,y:0,vx:0,vy:0},
+  {id:'OIL',label:'น้ำมัน\\n(Brent)',cat:'commodity',r:19,desc:'ราคาน้ำมันดิบ Brent\\nไทยนำเข้าสุทธิ — mixed กับ SET',x:0,y:0,vx:0,vy:0},
+  {id:'GOLD',label:'ราคาทอง',cat:'commodity',r:17,desc:'ราคาทองคำโลก\\nไทยเป็นผู้ส่งออกทอง',x:0,y:0,vx:0,vy:0},
+  {id:'RUBBER',label:'ราคายาง',cat:'commodity',r:14,desc:'ราคายางพาราโลก\\nกระทบ agri sector',x:0,y:0,vx:0,vy:0},
+  {id:'CCI',label:'ความเชื่อมั่น\\nผู้บริโภค',cat:'sentiment',r:15,desc:'Consumer Confidence Index\\nสะท้อน sentiment ในประเทศ',x:0,y:0,vx:0,vy:0},
+  {id:'GTREND',label:'Google\\nTrends',cat:'sentiment',r:13,desc:'ปริมาณการค้นหา "หุ้น"\\nproxy ของ retail investor sentiment',x:0,y:0,vx:0,vy:0},
+];
+
+const edges=[
+  ['SP500','SET','pos',3],['HSI','SET','pos',2],['CSI300','SET','pos',2],
+  ['DXY','SET','neg',3],['VIX','SET','neg',3],['USDTHB','SET','neg',2],
+  ['BOT','SET','neg',2],['CPI','SET','neg',2],['GDP','SET','pos',2],
+  ['TOURIST','SET','pos',2],['FUND','SET','pos',3],['PTT','SET','mixed',1],
+  ['EXPORT','SET','pos',2],['OIL','SET','mixed',2],['GOLD','SET','pos',1],
+  ['RUBBER','SET','pos',1],['CCI','SET','pos',2],['GTREND','SET','pos',1],
+  ['DXY','USDTHB','pos',2],['VIX','DXY','pos',2],['SP500','VIX','neg',2],
+  ['OIL','CPI','pos',2],['CPI','BOT','pos',2],['OIL','PTT','pos',2],
+  ['HSI','CSI300','pos',2],['FUND','USDTHB','neg',1],['GDP','EXPORT','pos',1],
+  ['GOLD','DXY','neg',2],['CCI','TOURIST','pos',1],
+];
+
+const nm={};nodes.forEach(n=>nm[n.id]=n);
+
+function initPos(){
+  const cx=0,cy=0;
+  const foreign=['SP500','HSI','CSI300','DXY'];
+  const macro=['USDTHB','BOT','CPI','GDP'];
+  const thai=['TOURIST','FUND','PTT','EXPORT'];
+  const commodity=['OIL','GOLD','RUBBER'];
+  const sentiment=['VIX','CCI','GTREND'];
+  function place(ids,sa,sp,r){
+    ids.forEach((id,i)=>{
+      const a=sa+(i-(ids.length-1)/2)*sp;
+      nm[id].x=cx+Math.cos(a)*r;nm[id].y=cy+Math.sin(a)*r;
+    });
+  }
+  place(foreign,Math.PI*1.1,.38,220);
+  place(macro,Math.PI*.55,.4,215);
+  place(thai,Math.PI*.0,.4,220);
+  place(commodity,Math.PI*1.65,.38,215);
+  place(sentiment,Math.PI*1.35,.38,215);
+}
+initPos();
+
+function sim(){
+  nodes.forEach(a=>{
+    if(a.id==='SET')return;
+    let fx=-a.x*.015,fy=-a.y*.015;
+    nodes.forEach(b=>{
+      if(a===b)return;
+      const dx=a.x-b.x,dy=a.y-b.y,d=Math.sqrt(dx*dx+dy*dy)||1;
+      const f=3200/(d*d);fx+=(dx/d)*f;fy+=(dy/d)*f;
+    });
+    edges.forEach(e=>{
+      const other=e[0]===a.id?nm[e[1]]:e[1]===a.id?nm[e[0]]:null;
+      if(!other)return;
+      const dx=other.x-a.x,dy=other.y-a.y,d=Math.sqrt(dx*dx+dy*dy)||1;
+      const ideal=(a.id==='SET'||other.id==='SET')?200:160;
+      const f=(d-ideal)*.03;fx+=(dx/d)*f;fy+=(dy/d)*f;
+    });
+    a.vx=(a.vx+fx)*.8;a.vy=(a.vy+fy)*.8;a.x+=a.vx;a.y+=a.vy;
+  });
+}
+
+let drag=null,ox=0,oy=0,hov=null,iter=0;
+
+function nodeAt(mx,my){
+  const wx=mx-W/2,wy=my-H/2;
+  for(let i=nodes.length-1;i>=0;i--){
+    const n=nodes[i];
+    if(Math.hypot(n.x-wx,n.y-wy)<n.r+6)return n;
+  }return null;
+}
+
+C.addEventListener('mousedown',e=>{const n=nodeAt(e.clientX,e.clientY);if(n){drag=n;ox=e.clientX-n.x-W/2;oy=e.clientY-n.y-H/2;}});
+C.addEventListener('mousemove',e=>{
+  if(drag){drag.x=e.clientX-ox-W/2;drag.y=e.clientY-oy-H/2;drag.vx=0;drag.vy=0;}
+  hov=nodeAt(e.clientX,e.clientY);
+  const tt=document.getElementById('tt');
+  if(hov){
+    tt.style.display='block';
+    tt.style.left=(e.clientX+16)+'px';tt.style.top=(e.clientY-10)+'px';
+    const cat=cats[hov.cat];
+    tt.innerHTML='<div class="tn">'+hov.label.replace('\\n',' ')+'</div>'
+      +'<div class="tc" style="color:'+cat.color+'">'+hov.cat+'</div>'
+      +'<div>'+hov.desc.replace('\\n','<br>')+'</div>';
+  }else{tt.style.display='none';}
+});
+C.addEventListener('mouseup',()=>drag=null);
+
+function ecol(d){return d==='pos'?'#34d399':d==='neg'?'#fb7185':'#94a3b8';}
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  ctx.save();ctx.translate(W/2,H/2);
+
+  edges.forEach(([a,b,dir,str])=>{
+    const na=nm[a],nb=nm[b];if(!na||!nb)return;
+    const hi=hov&&(hov.id===a||hov.id===b);
+    ctx.beginPath();ctx.moveTo(na.x,na.y);ctx.lineTo(nb.x,nb.y);
+    ctx.strokeStyle=ecol(dir);ctx.globalAlpha=hi?.9:.2;ctx.lineWidth=hi?str*1.6:str*.8;ctx.stroke();ctx.globalAlpha=1;
+
+    if(nb.id==='SET'||na.id==='SET'){
+      const tgt=nb.id==='SET'?nb:na,src=nb.id==='SET'?na:nb;
+      const dx=tgt.x-src.x,dy=tgt.y-src.y,d=Math.hypot(dx,dy);
+      const ux=dx/d,uy=dy/d;
+      const ax=tgt.x-ux*(tgt.r+4),ay=tgt.y-uy*(tgt.r+4);
+      ctx.beginPath();ctx.moveTo(ax,ay);
+      ctx.lineTo(ax-ux*10-uy*5,ay-uy*10+ux*5);
+      ctx.lineTo(ax-ux*10+uy*5,ay-uy*10-ux*5);
+      ctx.closePath();ctx.fillStyle=ecol(dir);ctx.globalAlpha=hi?.9:.35;ctx.fill();ctx.globalAlpha=1;
+    }
+  });
+
+  nodes.forEach(n=>{
+    const cat=cats[n.cat],hi=hov&&hov.id===n.id;
+    if(hi){ctx.beginPath();ctx.arc(n.x,n.y,n.r+8,0,Math.PI*2);ctx.fillStyle=cat.color+'33';ctx.fill();}
+    ctx.beginPath();ctx.arc(n.x,n.y,n.r,0,Math.PI*2);
+    ctx.fillStyle=cat.color+(n.id==='SET'?'ff':'22');
+    ctx.strokeStyle=cat.color;ctx.lineWidth=n.id==='SET'?3:hi?2.5:1.5;
+    ctx.fill();ctx.stroke();
+
+    const lines=n.label.split('\\n');
+    ctx.fillStyle=n.id==='SET'?'#0f1117':hi?cat.color:'#f1f5f9';
+    ctx.textAlign='center';ctx.textBaseline='middle';
+    const fs=n.id==='SET'?13:Math.min(11,n.r*.55);
+    ctx.font=(n.id==='SET'?'700 ':'500 ')+fs+'px system-ui';
+    if(lines.length===1){ctx.fillText(lines[0],n.x,n.y);}
+    else{
+      ctx.fillText(lines[0],n.x,n.y-fs*.6);
+      ctx.font='400 '+(fs*.88)+'px system-ui';
+      ctx.fillText(lines[1],n.x,n.y+fs*.7);
+    }
+  });
+  ctx.restore();
+}
+
+function loop(){if(iter<200){sim();iter++;}draw();requestAnimationFrame(loop);}
+loop();
+</script>
+</body>
+</html>"""
+
+    components.html(macro_html, height=720, scrolling=False)
+
+    st.markdown("---")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("ตัวแปรและทิศทางความสัมพันธ์")
+        factor_data = [
+            {"ตัวแปร": "S&P 500", "หมวด": "ตลาดต่างประเทศ", "ทิศทาง": "บวก (+)", "ความแรง": "สูง", "หมายเหตุ": "นำ SET ~1 วัน"},
+            {"ตัวแปร": "Hang Seng / CSI 300", "หมวด": "ตลาดต่างประเทศ", "ทิศทาง": "บวก (+)", "ความแรง": "กลาง", "หมายเหตุ": "ผ่านท่องเที่ยว + ส่งออก"},
+            {"ตัวแปร": "Dollar Index (DXY)", "หมวด": "ตลาดต่างประเทศ", "ทิศทาง": "ลบ (−)", "ความแรง": "สูง", "หมายเหตุ": "DXY แข็ง = เงินออก EM"},
+            {"ตัวแปร": "VIX", "หมวด": "Sentiment", "ทิศทาง": "ลบ (−)", "ความแรง": "สูง", "หมายเหตุ": "Fear index กดดัน EM"},
+            {"ตัวแปร": "USD/THB", "หมวด": "มหภาคในประเทศ", "ทิศทาง": "ลบ (−)", "ความแรง": "กลาง", "หมายเหตุ": "บาทอ่อน = ต้นทุนนำเข้าสูง"},
+            {"ตัวแปร": "ดอกเบี้ย BoT", "หมวด": "มหภาคในประเทศ", "ทิศทาง": "ลบ (−)", "ความแรง": "กลาง", "หมายเหตุ": "ขึ้นดอก = กด valuation"},
+            {"ตัวแปร": "CPI (เงินเฟ้อ)", "หมวด": "มหภาคในประเทศ", "ทิศทาง": "ลบ (−)", "ความแรง": "กลาง", "หมายเหตุ": "ผ่าน BoT"},
+            {"ตัวแปร": "GDP Growth", "หมวด": "มหภาคในประเทศ", "ทิศทาง": "บวก (+)", "ความแรง": "กลาง", "หมายเหตุ": "กำไรบริษัทสูง"},
+            {"ตัวแปร": "Fund Flow ต่างชาติ", "หมวด": "ปัจจัยเฉพาะไทย", "ทิศทาง": "บวก (+)", "ความแรง": "สูง", "หมายเหตุ": "Lead/lag SET ได้ชัด"},
+            {"ตัวแปร": "นักท่องเที่ยวต่างชาติ", "หมวด": "ปัจจัยเฉพาะไทย", "ทิศทาง": "บวก (+)", "ความแรง": "กลาง", "หมายเหตุ": "กระทบ tourism stocks"},
+            {"ตัวแปร": "น้ำมัน (Brent)", "หมวด": "สินค้าโภคภัณฑ์", "ทิศทาง": "Mixed (±)", "ความแรง": "กลาง", "หมายเหตุ": "ลบผ่าน import + บวกผ่าน PTT"},
+            {"ตัวแปร": "ราคาทอง", "หมวด": "สินค้าโภคภัณฑ์", "ทิศทาง": "บวก (+)", "ความแรง": "ต่ำ", "หมายเหตุ": "ไทยส่งออกทอง"},
+            {"ตัวแปร": "Google Trends 'หุ้น'", "หมวด": "Sentiment", "ทิศทาง": "บวก (+)", "ความแรง": "ต่ำ", "หมายเหตุ": "Retail sentiment proxy"},
+        ]
+        st.dataframe(pd.DataFrame(factor_data), use_container_width=True, hide_index=True)
+    with col2:
+        st.subheader("แนวทางการวิเคราะห์ต่อ")
+        st.markdown("""
+**Time-series / Granger causality**
+ทดสอบว่าตัวแปรไหน *นำ* SET จริง (lag 1–5 วัน)
+
+**Correlation matrix**
+คำนวณ Pearson / Spearman รายคู่ ดู rolling 90/180 วัน
+
+**Event study**
+เลือก events (ขึ้นดอก, เลือกตั้ง, วิกฤต) แล้วดู abnormal return
+
+**ML feature importance**
+ใช้ Random Forest / XGBoost rank ตัวแปรที่ทำนาย SET return ได้ดีที่สุด
+
+**Regime analysis**
+แบ่ง bull/bear market แล้วดูว่า correlation เปลี่ยนไปอย่างไร
+        """)
+
+
 def render_sidebar(df: pd.DataFrame, can_refresh: bool) -> dict:
     companies = sorted(df["symbol"].dropna().unique().tolist()) if not df.empty else []
     holder_options = []
@@ -1222,6 +1483,26 @@ def render_sidebar(df: pd.DataFrame, can_refresh: bool) -> dict:
         holder_options = holder_name_map.tolist()
         holder_label_to_clean = {label: clean for clean, label in holder_name_map.items()}
     with st.sidebar:
+        st.header("Navigation")
+        page = st.radio(
+            "เลือกหน้า",
+            options=["SET50 Shareholder Network", "Macro Factor Network"],
+            index=0,
+            label_visibility="collapsed",
+        )
+        st.divider()
+        if page == "Macro Factor Network":
+            return {
+                "page": page,
+                "min_pct": 1.0, "selected_companies": [], "excluded_companies": [],
+                "excluded_holders_clean": [], "exclude_nominees": True,
+                "only_cross_holders": True, "layout_mode": "NX Graph Layout",
+                "centrality_metric": "Degree", "show_labels": True,
+                "max_holder_labels": 20, "focus_holder_name": "None",
+                "clear_selected_node": False, "force_refresh": False,
+                "sample_limit": 50, "edge_size_metric": "holding_pct",
+                "refresh_prices": False,
+            }
         st.header("Filters")
         min_pct = st.slider("Min holding %", 0.0, 20.0, 1.0, 0.1)
         selected_companies = st.multiselect("Companies", companies, default=companies)
@@ -1252,10 +1533,7 @@ def render_sidebar(df: pd.DataFrame, can_refresh: bool) -> dict:
         clear_selected_node = st.button("Clear focus")
         sample_limit = st.number_input(
             "Refresh limit (local only)",
-            min_value=5,
-            max_value=50,
-            value=50,
-            step=5,
+            min_value=5, max_value=50, value=50, step=5,
             disabled=not can_refresh,
         )
         force_refresh = st.button("Refresh from SET", type="primary", disabled=not can_refresh)
@@ -1282,13 +1560,12 @@ def render_sidebar(df: pd.DataFrame, can_refresh: bool) -> dict:
         "sample_limit": sample_limit,
         "edge_size_metric": "market_value" if "มูลค่า" in edge_size_metric else "holding_pct",
         "refresh_prices": refresh_prices,
+        "page": page,
     }
 
 
 def main() -> None:
-    st.set_page_config(page_title="SET50 Shareholder Network", layout="wide")
-    st.title("SET50 Shareholder Network Analysis")
-    st.caption("Cache-first dashboard for major shareholders of SET50 companies.")
+    st.set_page_config(page_title="SET50 Network", layout="wide")
 
     ensure_cache_dir()
     cloud_mode = is_running_on_streamlit_cloud()
@@ -1297,11 +1574,20 @@ def main() -> None:
     cached_df, meta_df = load_cached_data()
     controls = render_sidebar(cached_df, can_refresh=can_refresh)
 
+    # ── Route pages ───────────────────────────────────────────────────────────
+    if controls["page"] == "Macro Factor Network":
+        render_macro_network_page()
+        return
+
+    # ── SET50 Shareholder Network page ────────────────────────────────────────
+    st.title("SET50 Shareholder Network Analysis")
+    st.caption("Cache-first dashboard for major shareholders of SET50 companies.")
+
     if controls["force_refresh"]:
         with st.spinner("Scraping SET50 constituents and major shareholders from SET..."):
             cached_df, meta_df = refresh_data(limit=int(controls["sample_limit"]))
 
-    # ── Stock prices (for market-value edge sizing) ───────────────────────────
+    # ── Stock prices ──────────────────────────────────────────────────────────
     prices = load_price_cache()
     if controls["refresh_prices"] or (not prices and controls["edge_size_metric"] == "market_value"):
         with st.spinner("กำลังดึงราคาหุ้นจาก yfinance..."):
@@ -1313,23 +1599,11 @@ def main() -> None:
             else:
                 st.warning("ไม่สามารถดึงราคาได้ (ตรวจสอบ internet / yfinance)")
     if prices:
-        price_date = "ล่าสุด" if not PRICE_CACHE.exists() else time.strftime(
-            "%d %b %Y %H:%M", time.localtime(PRICE_CACHE.stat().st_mtime)
-        )
+        price_date = time.strftime("%d %b %Y %H:%M", time.localtime(PRICE_CACHE.stat().st_mtime)) if PRICE_CACHE.exists() else "ล่าสุด"
         st.caption(f"ราคาหุ้น: {len(prices)} ตัว  •  อัปเดต {price_date}")
 
     if cached_df.empty:
-        st.error(
-            "No cached dataset found. Upload the CSV cache files into work/cache/ before deploying this app."
-        )
-        st.code(
-            "work/cache/set50_shareholders.csv\nwork/cache/set50_shareholders_meta.csv",
-            language="text",
-        )
-        if cloud_mode:
-            st.info("This Streamlit Cloud deployment is running in cache-only mode.")
-        else:
-            st.info("For local refresh, set environment variable ENABLE_LIVE_REFRESH=1 before running.")
+        st.error("No cached dataset found. Upload CSV cache files into work/cache/ before deploying.")
         return
 
     filtered_df = filter_dataframe(
@@ -1355,17 +1629,14 @@ def main() -> None:
     entity_map, entity_labels = build_entity_options(graph)
 
     focus_node = None
-    focused_holder_clean = None
     if controls["focus_holder_name"] != "None":
         selected = holder_metrics.loc[
             holder_metrics["shareholder_name"] == controls["focus_holder_name"], "shareholder_clean"
         ]
         if not selected.empty:
-            focused_holder_clean = selected.iloc[0]
-            focus_node = f"holder::{focused_holder_clean}"
+            focus_node = f"holder::{selected.iloc[0]}"
     if controls["clear_selected_node"]:
         focus_node = None
-        focused_holder_clean = None
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Companies", filtered_df["symbol"].nunique())
@@ -1376,156 +1647,93 @@ def main() -> None:
     if not meta_df.empty:
         st.caption(
             "Cached shareholder dates: "
-            + ", ".join(
-                f"{row.symbol} ({row.as_of_date})" for row in meta_df.head(8).itertuples(index=False)
-            )
+            + ", ".join(f"{r.symbol} ({r.as_of_date})" for r in meta_df.head(8).itertuples(index=False))
             + (" ..." if len(meta_df) > 8 else "")
         )
 
     st.subheader("2D Bipartite Network")
     st.caption(
-        "Choose either a fixed left/right bipartite layout or an NX graph-style layout, "
-        "then drag nodes freely to refine the view. The NX layout is tuned to stay tighter and can be reweighted by centrality metric."
-    )
-    st.markdown(
-        "`Green/Teal nodes` = listed companies in SET50, "
-        "`Orange nodes` = shareholders, "
-        "`Cyan box nodes` = listed companies in SET50, "
-        "`Coloured dot nodes` = shareholders (coloured by community), "
-        "`Purple node` = focused / selected node, "
-        "`Blue lines` = links from the focused node."
+        "Cyan box nodes = SET50 companies, coloured dots = shareholders (by community), "
+        "violet = selected node. Edge width = chosen metric."
     )
     st.caption(
-        "Edge colors (holding %): gray < 2%, blue 2–5%, orange 5–10%, red ≥10%. "
-        "Edge colors (market value): gray < 100M฿, blue 100M–1B฿, orange 1B–10B฿, red ≥10B฿. "
-        "Edge width is scaled by the chosen metric."
+        "Edge colors (holding %): gray<2%, blue 2–5%, orange 5–10%, red≥10%. "
+        "Edge colors (market value): gray<100M฿, blue 100M–1B฿, orange 1B–10B฿, red≥10B฿."
     )
     if focus_node:
-        node_type, raw_id = focus_node.split("::", 1)
-        if node_type == "company":
-            st.caption(f"Focused company: `{raw_id}`")
-        else:
-            holder_name = (
-                filtered_df.loc[filtered_df["shareholder_clean"] == raw_id, "shareholder_name"]
-                .value_counts()
-                .idxmax()
-            )
+        _, raw_id = focus_node.split("::", 1)
+        try:
+            holder_name = filtered_df.loc[filtered_df["shareholder_clean"] == raw_id, "shareholder_name"].value_counts().idxmax()
             st.caption(f"Focused shareholder: `{holder_name}`")
-    st.caption(
-        "The graph starts in a stable layout. You can click and drag nodes freely, "
-        "click a node to highlight its connected edges, and click empty space to reset."
-    )
+        except Exception:
+            pass
     components.html(
         make_draggable_network_html(
-            graph,
-            filtered_df=filtered_df,
-            focus_node=focus_node,
+            graph, filtered_df=filtered_df, focus_node=focus_node,
             layout_mode="nx" if controls["layout_mode"] == "NX Graph Layout" else "bipartite",
             centrality_metric=controls["centrality_metric"],
             allow_physics=controls["layout_mode"] == "NX Graph Layout",
             nx_position_scale=1.0,
             edge_size_metric=controls["edge_size_metric"],
         ),
-        height=1180,
-        scrolling=False,
+        height=1180, scrolling=False,
     )
 
     st.subheader("Relationship Explorer")
-    st.caption(
-        "Select two or more companies and/or shareholders to trace the shortest relationship paths between them. "
-        "The app will surface bridge nodes on those paths and score them with the six centrality theories."
-    )
-    relationship_cols = st.columns([2.2, 1.2])
-    with relationship_cols[0]:
+    st.caption("Select two or more nodes to trace the shortest relationship paths between them.")
+    rel_cols = st.columns([2.2, 1.2])
+    with rel_cols[0]:
         relationship_entities = st.multiselect(
-            "Choose companies / shareholders",
-            options=entity_labels,
-            default=[],
+            "Choose companies / shareholders", options=entity_labels, default=[],
             placeholder="Pick at least 2 nodes",
         )
-    with relationship_cols[1]:
+    with rel_cols[1]:
         relationship_metric = st.selectbox(
             "Sort bridge nodes by",
-            options=[
-                "Notion of Centrality",
-                "Degree",
-                "Closeness",
-                "Betweenness",
-                "Eigenvector",
-                "Katz",
-            ],
+            options=["Notion of Centrality","Degree","Closeness","Betweenness","Eigenvector","Katz"],
             index=3,
         )
 
     if len(relationship_entities) >= 2:
-        selected_relationship_nodes = [entity_map[label] for label in relationship_entities]
-        relationship_graph, relationship_paths, disconnected_pairs, path_edges = summarize_relationship_paths(
-            graph,
-            selected_relationship_nodes,
-        )
-
-        if relationship_graph.number_of_nodes() == 0:
+        selected_rel_nodes = [entity_map[l] for l in relationship_entities]
+        rel_graph, rel_paths, disconnected, path_edges = summarize_relationship_paths(graph, selected_rel_nodes)
+        if rel_graph.number_of_nodes() == 0:
             st.warning("No relationship graph could be built from the selected nodes.")
         else:
-            st.caption(
-                f"Relationship subgraph: {relationship_graph.number_of_nodes()} nodes, "
-                f"{relationship_graph.number_of_edges()} edges."
-            )
+            st.caption(f"Subgraph: {rel_graph.number_of_nodes()} nodes, {rel_graph.number_of_edges()} edges.")
             components.html(
                 make_draggable_network_html(
-                    relationship_graph,
-                    filtered_df=filtered_df,
+                    rel_graph, filtered_df=filtered_df,
                     layout_mode="nx" if controls["layout_mode"] == "NX Graph Layout" else "bipartite",
                     centrality_metric=relationship_metric,
-                    selected_nodes=set(selected_relationship_nodes),
+                    selected_nodes=set(selected_rel_nodes),
                     emphasized_edges=path_edges,
                     allow_physics=controls["layout_mode"] == "NX Graph Layout",
                     nx_position_scale=1.0,
                     edge_size_metric=controls["edge_size_metric"],
                 ),
-                height=860,
-                scrolling=False,
+                height=860, scrolling=False,
             )
-
-            if relationship_paths:
+            if rel_paths:
                 st.markdown("**Shortest paths found**")
-                st.dataframe(pd.DataFrame(relationship_paths), use_container_width=True, hide_index=True)
-            if disconnected_pairs:
+                st.dataframe(pd.DataFrame(rel_paths), use_container_width=True, hide_index=True)
+            if disconnected:
                 st.markdown("**Pairs with no path**")
-                st.dataframe(pd.DataFrame(disconnected_pairs), use_container_width=True, hide_index=True)
-
-            relationship_metrics = build_relationship_metrics(
-                graph,
-                selected_nodes=selected_relationship_nodes,
-                include_nodes=relationship_graph.nodes,
-            )
-            relationship_metrics = relationship_metrics.sort_values(
-                by=[relationship_metric, "Connections"],
-                ascending=[False, False],
-            )
+                st.dataframe(pd.DataFrame(disconnected), use_container_width=True, hide_index=True)
+            rel_metrics = build_relationship_metrics(graph, selected_nodes=selected_rel_nodes, include_nodes=rel_graph.nodes)
+            rel_metrics = rel_metrics.sort_values(by=[relationship_metric, "Connections"], ascending=[False, False])
             st.markdown("**Relationship Summary Table**")
-            st.caption(
-                "Each row is one node on the selected relationship paths, but every metric is calculated from the full filtered graph."
-            )
-            summary_columns = [
-                "Node", "Type", "Selected", "Connections",
-                "Degree", "Closeness", "Betweenness", "Eigenvector",
-                "Katz", "PageRank", "Notion of Centrality",
-            ]
             st.dataframe(
-                relationship_metrics[summary_columns],
-                use_container_width=True,
-                hide_index=True,
+                rel_metrics[["Node","Type","Selected","Connections","Degree","Closeness",
+                              "Betweenness","Eigenvector","Katz","PageRank","Notion of Centrality"]],
+                use_container_width=True, hide_index=True,
             )
-
-            bridge_nodes = relationship_metrics[
-                ~relationship_metrics["Selected"]
-            ].sort_values(by=[relationship_metric, "Connections"], ascending=[False, False])
-            if not bridge_nodes.empty:
+            bridge = rel_metrics[~rel_metrics["Selected"]].sort_values(by=[relationship_metric, "Connections"], ascending=[False, False])
+            if not bridge.empty:
                 st.markdown("**Top bridge nodes**")
-                st.dataframe(bridge_nodes.head(15), use_container_width=True, hide_index=True)
+                st.dataframe(bridge.head(15), use_container_width=True, hide_index=True)
     else:
-        st.info("Pick at least 2 nodes to inspect how they are connected through shared companies or shared shareholders.")
+        st.info("Pick at least 2 nodes to inspect how they are connected.")
 
     left, right = st.columns(2)
     with left:
@@ -1549,10 +1757,8 @@ def main() -> None:
     st.subheader("Raw Edges")
     st.dataframe(
         filtered_df.sort_values(["shareholder_clean", "holding_pct"], ascending=[True, False]),
-        use_container_width=True,
-        hide_index=True,
+        use_container_width=True, hide_index=True,
     )
-
     st.info(
         "Interpretation note: this graph is based on disclosed major shareholders on SET. "
         "It can include nominees, custodians, and NVDR holders, so it is not the same as "
