@@ -250,6 +250,16 @@ def build_entity_options(graph: nx.Graph) -> tuple[dict[str, str], list[str]]:
     return option_map, list(option_map.keys())
 
 
+def edge_style_for_holding(holding_pct: float) -> tuple[str, int]:
+    if holding_pct >= 10:
+        return "#7C2D12", 3
+    if holding_pct >= 5:
+        return "#C2410C", 2
+    if holding_pct >= 2:
+        return "#0891B2", 2
+    return "#94A3B8", 1
+
+
 def summarize_relationship_paths(
     graph: nx.Graph,
     selected_nodes: list[str],
@@ -446,6 +456,7 @@ def make_draggable_network_html(
 
     for left, right, edge_attrs in graph.edges(data=True):
         edge_key = tuple(sorted((left, right)))
+        base_color, base_width = edge_style_for_holding(float(edge_attrs.get("weight", 0)))
         if edge_key in emphasized_edges:
             color = "#2563EB"
             width = 4
@@ -456,8 +467,8 @@ def make_draggable_network_html(
             color = "rgba(156,163,175,0.18)"
             width = 1
         else:
-            color = "rgba(156,163,175,0.65)"
-            width = 1
+            color = base_color
+            width = base_width
         net.add_edge(
             left,
             right,
@@ -1130,10 +1141,13 @@ def main() -> None:
     st.markdown(
         "`Green/Teal nodes` = listed companies in SET50, "
         "`Orange nodes` = shareholders, "
-        "`Gray lines` = shareholding relationships between a shareholder and a company, "
+        "`Gray/Blue/Orange/Brown lines` = shareholding relationships colored by holding percentage, "
         "`Purple node` = focused shareholder, "
         "`Blue lines` = links from the focused shareholder to connected companies, "
         "`Larger circles` = nodes with more connections."
+    )
+    st.caption(
+        "Edge colors: `gray` < 2%, `blue` 2-4.99%, `orange` 5-9.99%, `brown` 10%+."
     )
     if focus_node:
         node_type, raw_id = focus_node.split("::", 1)
