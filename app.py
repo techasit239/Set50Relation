@@ -1254,6 +1254,7 @@ def render_macro_network_page() -> None:
   <div class="li"><div class="ld" style="background:#34d399"></div>ปัจจัยเฉพาะไทย</div>
   <div class="li"><div class="ld" style="background:#a78bfa"></div>สินค้าโภคภัณฑ์</div>
   <div class="li"><div class="ld" style="background:#fb7185"></div>Sentiment</div>
+  <div class="li"><div class="ld" style="background:#22d3ee"></div>Unusual ⚡</div>
   <div class="li"><div class="lb" style="background:#fbbf24;border:2px solid #fff"></div>SET Index</div>
 </div>
 <div id="leg2">
@@ -1269,63 +1270,96 @@ function resize(){W=C.width=window.innerWidth;H=C.height=window.innerHeight}
 resize();window.addEventListener('resize',resize);
 
 const cats={foreign:{color:'#f59e42'},macro:{color:'#60a5fa'},thai:{color:'#34d399'},
-            commodity:{color:'#a78bfa'},sentiment:{color:'#fb7185'},center:{color:'#fbbf24'}};
+            commodity:{color:'#a78bfa'},sentiment:{color:'#fb7185'},center:{color:'#fbbf24'},
+            unusual:{color:'#22d3ee'}};
 
 const nodes=[
+  // ── Centre ────────────────────────────────────────────────────────────────
   {id:'SET',label:'SET Index',cat:'center',r:32,desc:'ดัชนีตลาดหลักทรัพย์ไทย\\nเป้าหมายที่เราต้องการวิเคราะห์',x:0,y:0,vx:0,vy:0},
+  // ── ตลาดต่างประเทศ ─────────────────────────────────────────────────────────
   {id:'SP500',label:'S&P 500',cat:'foreign',r:20,desc:'ตลาดสหรัฐ — correlation สูงช่วง risk-off\\nมักนำ SET ราว 1 วัน',x:0,y:0,vx:0,vy:0},
   {id:'HSI',label:'Hang Seng',cat:'foreign',r:18,desc:'ตลาดฮ่องกง/จีน\\nส่งผลผ่านท่องเที่ยวและส่งออก',x:0,y:0,vx:0,vy:0},
-  {id:'CSI300',label:'CSI 300',cat:'foreign',r:16,desc:'ตลาดหุ้นจีน A-shares\\nความเชื่อมั่นต่อเศรษฐกิจจีน',x:0,y:0,vx:0,vy:0},
   {id:'DXY',label:'Dollar\\nIndex (DXY)',cat:'foreign',r:18,desc:'ความแข็งของดอลลาร์\\nDXY แข็ง → เงินไหลออก EM',x:0,y:0,vx:0,vy:0},
+  // ── Sentiment ──────────────────────────────────────────────────────────────
   {id:'VIX',label:'VIX\\n(Fear)',cat:'sentiment',r:19,desc:'ดัชนีความกลัวตลาดโลก\\nVIX สูง → เงินออกจาก EM',x:0,y:0,vx:0,vy:0},
-  {id:'USDTHB',label:'USD/THB',cat:'macro',r:19,desc:'ค่าเงินบาทต่อดอลลาร์\\nบาทอ่อน → กดดัน import cost',x:0,y:0,vx:0,vy:0},
-  {id:'BOT',label:'ดอกเบี้ย\\nBoT',cat:'macro',r:17,desc:'อัตราดอกเบี้ยนโยบาย ธปท.\\nขึ้นดอก → ต้นทุนทุนสูง',x:0,y:0,vx:0,vy:0},
-  {id:'CPI',label:'เงินเฟ้อ\\n(CPI)',cat:'macro',r:16,desc:'ดัชนีราคาผู้บริโภค\\nเงินเฟ้อสูง → BoT ขึ้นดอก',x:0,y:0,vx:0,vy:0},
-  {id:'GDP',label:'GDP Growth',cat:'macro',r:17,desc:'อัตราการเติบโต GDP ไทย\\nGDP ดี → กำไรบริษัทสูง',x:0,y:0,vx:0,vy:0},
-  {id:'TOURIST',label:'นักท่องเที่ยว\\nต่างชาติ',cat:'thai',r:19,desc:'จำนวนนักท่องเที่ยวต่างชาติ\\nส่งผลตรงต่อ tourism stocks',x:0,y:0,vx:0,vy:0},
+  // ── มหภาคในประเทศ ──────────────────────────────────────────────────────────
+  {id:'USDTHB',label:'USD/THB',cat:'macro',r:18,desc:'ค่าเงินบาทต่อดอลลาร์\\nบาทอ่อน → กดดัน import cost',x:0,y:0,vx:0,vy:0},
+  {id:'BOT',label:'ดอกเบี้ย\\nBoT',cat:'macro',r:16,desc:'อัตราดอกเบี้ยนโยบาย ธปท.\\nขึ้นดอก → ต้นทุนทุนสูง',x:0,y:0,vx:0,vy:0},
+  {id:'CPI',label:'เงินเฟ้อ\\n(CPI)',cat:'macro',r:15,desc:'ดัชนีราคาผู้บริโภค\\nเงินเฟ้อสูง → BoT ขึ้นดอก',x:0,y:0,vx:0,vy:0},
+  {id:'GDP',label:'GDP Growth',cat:'macro',r:16,desc:'อัตราการเติบโต GDP ไทย\\nGDP ดี → กำไรบริษัทสูง',x:0,y:0,vx:0,vy:0},
+  // ── ปัจจัยเฉพาะไทย ─────────────────────────────────────────────────────────
+  {id:'TOURIST',label:'นักท่องเที่ยว\\nต่างชาติ',cat:'thai',r:18,desc:'จำนวนนักท่องเที่ยวต่างชาติ\\nส่งผลตรงต่อ tourism stocks',x:0,y:0,vx:0,vy:0},
   {id:'FUND',label:'Fund Flow\\nต่างชาติ',cat:'thai',r:21,desc:'เงิน net buy/sell ต่างชาติ\\nตัวที่ lead/lag SET ได้ชัด',x:0,y:0,vx:0,vy:0},
-  {id:'PTT',label:'PTT Weight',cat:'thai',r:16,desc:'PTT + กลุ่มมี weight สูงใน SET\\nราคาน้ำมันกระทบ SET ผ่าน PTT',x:0,y:0,vx:0,vy:0},
   {id:'EXPORT',label:'มูลค่า\\nส่งออก',cat:'thai',r:15,desc:'ปริมาณส่งออกรายเดือน\\nกระทบ manufacturing/agri stocks',x:0,y:0,vx:0,vy:0},
-  {id:'OIL',label:'น้ำมัน\\n(Brent)',cat:'commodity',r:19,desc:'ราคาน้ำมันดิบ Brent\\nไทยนำเข้าสุทธิ — mixed กับ SET',x:0,y:0,vx:0,vy:0},
-  {id:'GOLD',label:'ราคาทอง',cat:'commodity',r:17,desc:'ราคาทองคำโลก\\nไทยเป็นผู้ส่งออกทอง',x:0,y:0,vx:0,vy:0},
-  {id:'RUBBER',label:'ราคายาง',cat:'commodity',r:14,desc:'ราคายางพาราโลก\\nกระทบ agri sector',x:0,y:0,vx:0,vy:0},
-  {id:'CCI',label:'ความเชื่อมั่น\\nผู้บริโภค',cat:'sentiment',r:15,desc:'Consumer Confidence Index\\nสะท้อน sentiment ในประเทศ',x:0,y:0,vx:0,vy:0},
-  {id:'GTREND',label:'Google\\nTrends',cat:'sentiment',r:13,desc:'ปริมาณการค้นหา "หุ้น"\\nproxy ของ retail investor sentiment',x:0,y:0,vx:0,vy:0},
+  // ── สินค้าโภคภัณฑ์ ─────────────────────────────────────────────────────────
+  {id:'OIL',label:'น้ำมัน\\n(Brent)',cat:'commodity',r:18,desc:'ราคาน้ำมันดิบ Brent\\nไทยนำเข้าสุทธิ — mixed กับ SET',x:0,y:0,vx:0,vy:0},
+  {id:'GOLD',label:'ราคาทอง',cat:'commodity',r:16,desc:'ราคาทองคำโลก\\nไทยเป็นผู้ส่งออกทอง',x:0,y:0,vx:0,vy:0},
+  {id:'RUBBER',label:'ราคายาง',cat:'commodity',r:13,desc:'ราคายางพาราโลก\\nกระทบ agri sector และรายได้เกษตรกร',x:0,y:0,vx:0,vy:0},
+  // ── Unusual ────────────────────────────────────────────────────────────────
+  {id:'BTC',label:'Bitcoin',cat:'unusual',r:16,desc:'⚡ แปลก: BTC กับ SET\\nค่อนข้าง uncorrelated ปกติ\\nแต่ช่วง risk-on จะขึ้นพร้อมกัน',x:0,y:0,vx:0,vy:0},
+  {id:'BDI',label:'Baltic Dry\\nIndex (BDI)',cat:'unusual',r:17,desc:'⚡ แปลก: ค่าระวางเรือบรรทุกสินค้าโลก\\nสะท้อน demand จริงก่อน GDP รายงาน\\nBDI สูง → ส่งออกไทยดี',x:0,y:0,vx:0,vy:0},
+  {id:'CNY',label:'CNY/THB\\n(หยวน)',cat:'unusual',r:15,desc:'⚡ แปลก: กำลังซื้อนักท่องเที่ยวจีน\\nหยวนแข็ง → จีนมาไทยมากขึ้น\\nกระทบ AOT, CENTEL, MINT',x:0,y:0,vx:0,vy:0},
+  {id:'PORK_CN',label:'ราคาหมู\\nจีน',cat:'unusual',r:14,desc:'⚡ แปลก: Pork cycle จีน\\nหมูแพงในจีน → จีนนำเข้าไก่แทน\\nกระทบ CPF, TU ล่วงหน้า ~2 ไตรมาส',x:0,y:0,vx:0,vy:0},
+  {id:'PM25',label:'PM2.5\\nกรุงเทพ',cat:'unusual',r:13,desc:'⚡ แปลก: ฝุ่นควันไม่ใช่แค่สุขภาพ\\nPM2.5 สูง → นักท่องเที่ยวลด\\nกระทบ AOT, hotel stocks',x:0,y:0,vx:0,vy:0},
+  {id:'DAM',label:'เขื่อน\\nภูมิพล',cat:'unusual',r:13,desc:'⚡ แปลก: ระดับน้ำในเขื่อน\\nต่ำ → drought → ข้าว/อ้อยเสียหาย\\nสูง → ไฟฟ้าถูก → ต้นทุนลด',x:0,y:0,vx:0,vy:0},
+  {id:'IPO',label:'จำนวน IPO\\nต่อเดือน',cat:'unusual',r:12,desc:'⚡ แปลก: IPO มากเมื่อตลาด euphoria\\nจำนวน IPO สูงสุด = signal ตลาดใกล้ peak\\n(contrarian indicator)',x:0,y:0,vx:0,vy:0},
+  {id:'GT_QUIT',label:'Google Trends\\n"ลาออก"',cat:'unusual',r:11,desc:'⚡ แปลก: ค้นหา "ลาออก" มาก\\n= labor market stress\\n= consumer spending ลด → กด SET',x:0,y:0,vx:0,vy:0},
+  {id:'DURIAN',label:'ราคาทุเรียน\\nในจีน',cat:'unusual',r:11,desc:'⚡ แปลก: ทุเรียนไทยส่งออกจีน ~90%\\nราคาสูง → เกษตรกรไทยรวย → ชนบทจับจ่าย\\nlead ไตรมาสถัดไป',x:0,y:0,vx:0,vy:0},
 ];
 
 const edges=[
-  ['SP500','SET','pos',3],['HSI','SET','pos',2],['CSI300','SET','pos',2],
+  // ── to SET ────────────────────────────────────────────────────────────────
+  ['SP500','SET','pos',3],['HSI','SET','pos',2],
   ['DXY','SET','neg',3],['VIX','SET','neg',3],['USDTHB','SET','neg',2],
   ['BOT','SET','neg',2],['CPI','SET','neg',2],['GDP','SET','pos',2],
-  ['TOURIST','SET','pos',2],['FUND','SET','pos',3],['PTT','SET','mixed',1],
+  ['TOURIST','SET','pos',2],['FUND','SET','pos',3],
   ['EXPORT','SET','pos',2],['OIL','SET','mixed',2],['GOLD','SET','pos',1],
-  ['RUBBER','SET','pos',1],['CCI','SET','pos',2],['GTREND','SET','pos',1],
+  ['RUBBER','SET','pos',1],
+  // ── unusual → SET ─────────────────────────────────────────────────────────
+  ['BTC','SET','pos',2],['BDI','SET','pos',2],['CNY','SET','pos',2],
+  ['PORK_CN','SET','pos',1],['PM25','SET','neg',2],['DAM','SET','mixed',1],
+  ['IPO','SET','mixed',1],['GT_QUIT','SET','neg',2],['DURIAN','SET','pos',1],
+  // ── inter-node conventional ────────────────────────────────────────────────
   ['DXY','USDTHB','pos',2],['VIX','DXY','pos',2],['SP500','VIX','neg',2],
-  ['OIL','CPI','pos',2],['CPI','BOT','pos',2],['OIL','PTT','pos',2],
-  ['HSI','CSI300','pos',2],['FUND','USDTHB','neg',1],['GDP','EXPORT','pos',1],
-  ['GOLD','DXY','neg',2],['CCI','TOURIST','pos',1],
+  ['OIL','CPI','pos',2],['CPI','BOT','pos',2],
+  ['FUND','USDTHB','neg',1],['GDP','EXPORT','pos',1],['GOLD','DXY','neg',2],
+  // ── inter-node unusual ─────────────────────────────────────────────────────
+  ['BTC','VIX','neg',1],          // risk-on: BTC ขึ้นเมื่อ VIX ลด
+  ['CNY','TOURIST','pos',2],      // หยวนแข็ง → จีนมาเที่ยวมากขึ้น
+  ['CNY','PORK_CN','neg',1],      // ราคาหมูจีนแพง → เงินเฟ้อ → หยวนอ่อน
+  ['PORK_CN','EXPORT','pos',1],   // หมูแพง → ไทยส่งออกไก่แทน
+  ['BDI','EXPORT','pos',2],       // ค่าระวางสูง = demand สินค้าโลกดี
+  ['BDI','OIL','pos',1],          // น้ำมันแพง → ค่าระวางสูง
+  ['PM25','TOURIST','neg',2],     // ฝุ่นเยอะ → นักท่องเที่ยวหาย
+  ['PM25','DAM','neg',1],         // ภัยแล้ง → ฝุ่นควัน
+  ['DAM','OIL','neg',1],          // น้ำในเขื่อนสูง → ไฟฟ้าพลังน้ำ → ลดพึ่งน้ำมัน
+  ['DURIAN','CNY','pos',1],       // ทุเรียนแพงเมื่อจีนซื้อเยอะ = demand จีนสูง
+  ['IPO','SP500','pos',1],        // IPO บูมตามตลาดขาขึ้นโลก
+  ['GT_QUIT','BOT','pos',1],      // ค้นหา "ลาออก" มาก → BoT กังวลเศรษฐกิจ
 ];
 
 const nm={};nodes.forEach(n=>nm[n.id]=n);
 
 function initPos(){
   const cx=0,cy=0;
-  const foreign=['SP500','HSI','CSI300','DXY'];
+  const foreign=['SP500','HSI','DXY'];
   const macro=['USDTHB','BOT','CPI','GDP'];
-  const thai=['TOURIST','FUND','PTT','EXPORT'];
+  const thai=['TOURIST','FUND','EXPORT'];
   const commodity=['OIL','GOLD','RUBBER'];
-  const sentiment=['VIX','CCI','GTREND'];
+  const sentiment=['VIX'];
+  const unusual=['BTC','BDI','CNY','PORK_CN','PM25','DAM','IPO','GT_QUIT','DURIAN'];
   function place(ids,sa,sp,r){
     ids.forEach((id,i)=>{
       const a=sa+(i-(ids.length-1)/2)*sp;
       nm[id].x=cx+Math.cos(a)*r;nm[id].y=cy+Math.sin(a)*r;
     });
   }
-  place(foreign,Math.PI*1.1,.38,220);
-  place(macro,Math.PI*.55,.4,215);
-  place(thai,Math.PI*.0,.4,220);
-  place(commodity,Math.PI*1.65,.38,215);
-  place(sentiment,Math.PI*1.35,.38,215);
+  place(foreign,Math.PI*1.15,.42,220);
+  place(macro,Math.PI*.60,.40,215);
+  place(thai,Math.PI*.05,.38,220);
+  place(commodity,Math.PI*1.65,.38,210);
+  place(sentiment,Math.PI*1.38,.30,200);
+  place(unusual,Math.PI*-.45,.32,260);  // outer ring bottom-right
 }
 initPos();
 
