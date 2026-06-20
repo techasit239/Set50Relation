@@ -1504,6 +1504,375 @@ loop();
         """)
 
 
+POLITICAL_NODE_COLORS = {
+    "party": "#2563eb",
+    "minister": "#7c3aed",
+    "ministry": "#f59e0b",
+    "lever": "#14b8a6",
+    "sector": "#22c55e",
+    "market": "#f43f5e",
+}
+
+POLITICAL_EDGE_COLORS = {
+    "positive": "#34d399",
+    "negative": "#fb7185",
+    "mixed": "#94a3b8",
+    "structural": "#60a5fa",
+}
+
+POLITICAL_LAYER_LABELS = {
+    "party": "Political Group",
+    "minister": "Minister Type",
+    "ministry": "Ministry",
+    "lever": "Policy Lever",
+    "sector": "SET Sector",
+    "market": "Market Effect",
+}
+
+
+def build_layered_network_figure(
+    nodes: list[dict],
+    edges: list[dict],
+    title: str,
+) -> go.Figure:
+    layer_order = ["party", "minister", "ministry", "lever", "sector", "market"]
+    active_layers = [layer for layer in layer_order if any(node["group"] == layer for node in nodes)]
+
+    positioned_nodes: list[dict] = []
+    layer_positions: dict[str, float] = {}
+    for layer_index, layer in enumerate(active_layers):
+        layer_nodes = sorted(
+            [node for node in nodes if node["group"] == layer],
+            key=lambda node: (node.get("order", 0), node["label"]),
+        )
+        layer_positions[layer] = layer_index / max(len(active_layers) - 1, 1)
+        count = len(layer_nodes)
+        for item_index, node in enumerate(layer_nodes):
+            y = 0.5 if count == 1 else 1 - (item_index / (count - 1))
+            positioned_nodes.append({**node, "x": layer_positions[layer], "y": y})
+
+    positions = {node["id"]: (node["x"], node["y"]) for node in positioned_nodes}
+
+    fig = go.Figure()
+    edge_hover_x: list[float] = []
+    edge_hover_y: list[float] = []
+    edge_hover_text: list[str] = []
+
+    for edge in edges:
+        source = edge["source"]
+        target = edge["target"]
+        if source not in positions or target not in positions:
+            continue
+        x0, y0 = positions[source]
+        x1, y1 = positions[target]
+        color = POLITICAL_EDGE_COLORS.get(edge.get("effect", "mixed"), "#94a3b8")
+        width = 2 + edge.get("weight", 1) * 0.7
+        fig.add_trace(
+            go.Scatter(
+                x=[x0, x1, None],
+                y=[y0, y1, None],
+                mode="lines",
+                line={"color": color, "width": width},
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+        edge_hover_x.append((x0 + x1) / 2)
+        edge_hover_y.append((y0 + y1) / 2)
+        edge_hover_text.append(
+            "<br>".join(
+                [
+                    f"<b>{edge['label']}</b>",
+                    edge.get("detail", ""),
+                    f"Signal: {edge.get('signal_label', edge.get('effect', 'mixed').title())}",
+                ]
+            )
+        )
+
+    if edge_hover_x:
+        fig.add_trace(
+            go.Scatter(
+                x=edge_hover_x,
+                y=edge_hover_y,
+                mode="markers",
+                marker={"size": 10, "color": "rgba(0,0,0,0)"},
+                hovertemplate="%{text}<extra></extra>",
+                text=edge_hover_text,
+                showlegend=False,
+            )
+        )
+
+    for group in ["party", "minister", "ministry", "lever", "sector", "market"]:
+        group_nodes = [node for node in positioned_nodes if node["group"] == group]
+        if not group_nodes:
+            continue
+        color = POLITICAL_NODE_COLORS[group]
+        fig.add_trace(
+            go.Scatter(
+                x=[node["x"] for node in group_nodes],
+                y=[node["y"] for node in group_nodes],
+                mode="markers+text",
+                text=[node["label"] for node in group_nodes],
+                textposition="top center",
+                textfont={"size": 11, "color": "#e5e7eb"},
+                marker={
+                    "size": [node.get("size", 26) for node in group_nodes],
+                    "color": color,
+                    "line": {"color": "#e5e7eb", "width": 1.2},
+                    "opacity": 0.92,
+                },
+                hovertemplate="%{customdata}<extra></extra>",
+                customdata=[
+                    "<br>".join(
+                        [
+                            f"<b>{node['label']}</b>",
+                            f"Group: {POLITICAL_LAYER_LABELS.get(node['group'], node['group'])}",
+                            node.get("description", ""),
+                        ]
+                    )
+                    for node in group_nodes
+                ],
+                name=POLITICAL_LAYER_LABELS.get(group, group.title()),
+            )
+        )
+
+    for layer, x in layer_positions.items():
+        fig.add_annotation(
+            x=x,
+            y=1.08,
+            xref="x",
+            yref="paper",
+            text=POLITICAL_LAYER_LABELS.get(layer, layer.title()),
+            showarrow=False,
+            font={"size": 12, "color": "#94a3b8"},
+        )
+
+    fig.update_layout(
+        title={"text": title, "font": {"size": 20, "color": "#f9fafb"}},
+        paper_bgcolor="#111827",
+        plot_bgcolor="#111827",
+        font={"color": "#f3f4f6"},
+        margin={"l": 20, "r": 20, "t": 70, "b": 20},
+        legend={
+            "orientation": "h",
+            "yanchor": "bottom",
+            "y": 1.02,
+            "xanchor": "left",
+            "x": 0,
+            "bgcolor": "rgba(17,24,39,0.85)",
+        },
+        xaxis={"visible": False, "range": [-0.05, 1.05]},
+        yaxis={"visible": False, "range": [-0.05, 1.05]},
+        height=760,
+        hoverlabel={"bgcolor": "#1f2937", "font_color": "#f9fafb"},
+    )
+    return fig
+
+
+def build_ministry_network_payload() -> tuple[list[dict], list[dict], pd.DataFrame]:
+    nodes = [
+        {"id": "mof", "label": "Finance", "group": "ministry", "order": 1, "description": "Fiscal stimulus, taxes, soft-loan policy, debt narrative."},
+        {"id": "mot", "label": "Transport", "group": "ministry", "order": 2, "description": "Project tenders, concessions, infrastructure execution speed."},
+        {"id": "moe", "label": "Energy", "group": "ministry", "order": 3, "description": "Power tariff pressure, fuel pricing, gas structure."},
+        {"id": "moc", "label": "Commerce", "group": "ministry", "order": 4, "description": "Price controls, export narrative, cost-of-living interventions."},
+        {"id": "moa", "label": "Agriculture", "group": "ministry", "order": 5, "description": "Crop-price support, rural subsidies, irrigation and water."},
+        {"id": "moi", "label": "Interior", "group": "ministry", "order": 6, "description": "Local budgets, land use, approvals, provincial patronage."},
+        {"id": "moph", "label": "Public Health", "group": "ministry", "order": 7, "description": "Hospital reimbursement and healthcare access rules."},
+        {"id": "moind", "label": "Industry", "group": "ministry", "order": 8, "description": "Factory approvals, EV policy, industrial promotion."},
+        {"id": "tour", "label": "Tourism & Sports", "group": "ministry", "order": 9, "description": "Visa policy, tourism promotion, travel demand."},
+        {"id": "lev_fiscal", "label": "Stimulus / Tax / Soft Loan", "group": "lever", "order": 1, "description": "Consumption and liquidity expectations move first."},
+        {"id": "lev_tender", "label": "Tender / Concession Pipeline", "group": "lever", "order": 2, "description": "Project cadence matters more than headlines."},
+        {"id": "lev_energy", "label": "Power Tariff / Fuel Pricing", "group": "lever", "order": 3, "description": "Consumer relief can mean producer margin compression."},
+        {"id": "lev_price", "label": "Price Control / Export Push", "group": "lever", "order": 4, "description": "Good CPI optics may still hurt listed-company margins."},
+        {"id": "lev_rural", "label": "Crop Support / Rural Income", "group": "lever", "order": 5, "description": "Provincial spending can feed domestic demand later."},
+        {"id": "lev_local", "label": "Local Budget / Zoning", "group": "lever", "order": 6, "description": "Quiet approvals often matter more than cabinet speeches."},
+        {"id": "lev_health", "label": "Reimbursement Rules", "group": "lever", "order": 7, "description": "Tariff and coverage changes can rerate hospitals quickly."},
+        {"id": "lev_industry", "label": "BOI / EV / Permits", "group": "lever", "order": 8, "description": "Factory approvals shape industrial land demand."},
+        {"id": "lev_tourism", "label": "Visa / Demand Activation", "group": "lever", "order": 9, "description": "Tourist flow is a multi-sector earnings driver."},
+        {"id": "sec_bank", "label": "Banks / Finance", "group": "sector", "order": 1, "description": "Sensitive to credit growth, NPL expectations, debt relief."},
+        {"id": "sec_retail", "label": "Retail / Property", "group": "sector", "order": 2, "description": "Domestic consumption and liquidity are the key channels."},
+        {"id": "sec_construct", "label": "Contractors / Materials", "group": "sector", "order": 3, "description": "Tender timing and provincial spend drive the trade."},
+        {"id": "sec_transport", "label": "Transport / Concessions", "group": "sector", "order": 4, "description": "Market prices future concession cash flow early."},
+        {"id": "sec_energy", "label": "Power / Energy", "group": "sector", "order": 5, "description": "Tariff freezes can be negative even when politically popular."},
+        {"id": "sec_food", "label": "Food / Exporters", "group": "sector", "order": 6, "description": "Commodity and price-control policy can cut both ways."},
+        {"id": "sec_rural", "label": "Provincial Demand Plays", "group": "sector", "order": 7, "description": "Rural income shows up in retail and credit later."},
+        {"id": "sec_industrial", "label": "Industrial Estate / EV Chain", "group": "sector", "order": 8, "description": "Factory approvals and supply-chain policy matter."},
+        {"id": "sec_hospital", "label": "Hospitals", "group": "sector", "order": 9, "description": "Coverage and reimbursement changes rerate the sector fast."},
+        {"id": "sec_tourism", "label": "Hotels / Airports / Airlines", "group": "sector", "order": 10, "description": "A direct beneficiary of visa and tourism promotion policy."},
+        {"id": "mk_rerate", "label": "Rerating / Speculation", "group": "market", "order": 1, "description": "Market prices expected winners before earnings move."},
+        {"id": "mk_margin", "label": "Margin Pressure", "group": "market", "order": 2, "description": "Policy that helps consumers can still hurt listed producers."},
+        {"id": "mk_domestic", "label": "Domestic Demand Trade", "group": "market", "order": 3, "description": "Retail, finance, and property reprice on stimulus expectations."},
+        {"id": "mk_patronage", "label": "Provincial / Patronage Trade", "group": "market", "order": 4, "description": "The trade often follows approvals, budgets, and local networks."},
+    ]
+
+    edges = [
+        {"source": "mof", "target": "lev_fiscal", "label": "Finance controls stimulus", "detail": "Digital wallet, taxes, soft loans, debt relief.", "effect": "structural", "signal_label": "Structural", "weight": 3},
+        {"source": "mot", "target": "lev_tender", "label": "Transport controls projects", "detail": "Bid timing and concession renewals drive sentiment.", "effect": "structural", "signal_label": "Structural", "weight": 3},
+        {"source": "moe", "target": "lev_energy", "label": "Energy controls tariffs", "detail": "Lower Ft can squeeze generators and energy names.", "effect": "structural", "signal_label": "Structural", "weight": 3},
+        {"source": "moc", "target": "lev_price", "label": "Commerce can cap prices", "detail": "Cheaper staples can hurt margin-rich operators.", "effect": "mixed", "signal_label": "Mixed", "weight": 2},
+        {"source": "moa", "target": "lev_rural", "label": "Agriculture shapes rural income", "detail": "Crop support filters into provincial purchasing power.", "effect": "positive", "signal_label": "Positive", "weight": 2},
+        {"source": "moi", "target": "lev_local", "label": "Interior channels local power", "detail": "Zoning, budgets, and local approvals matter quietly.", "effect": "structural", "signal_label": "Structural", "weight": 3},
+        {"source": "moph", "target": "lev_health", "label": "Public health sets hospital rules", "detail": "Coverage and reimbursement changes reprice hospital cash flow.", "effect": "mixed", "signal_label": "Mixed", "weight": 2},
+        {"source": "moind", "target": "lev_industry", "label": "Industry sets permit cadence", "detail": "EV and factory policy drives estate demand.", "effect": "positive", "signal_label": "Positive", "weight": 2},
+        {"source": "tour", "target": "lev_tourism", "label": "Tourism activates travel demand", "detail": "Visa waivers and promotion flow into occupancy and traffic.", "effect": "positive", "signal_label": "Positive", "weight": 2},
+        {"source": "lev_fiscal", "target": "sec_bank", "label": "Credit and NPL expectations", "detail": "Stimulus can lift loan growth; debt relief can cut yield.", "effect": "mixed", "signal_label": "Mixed", "weight": 3},
+        {"source": "lev_fiscal", "target": "sec_retail", "label": "Cash reaches consumers", "detail": "Retail and property rerate on spending expectations.", "effect": "positive", "signal_label": "Positive", "weight": 3},
+        {"source": "lev_tender", "target": "sec_construct", "label": "Backlog and new bids", "detail": "Construction names often move before projects start.", "effect": "positive", "signal_label": "Positive", "weight": 3},
+        {"source": "lev_tender", "target": "sec_transport", "label": "Concession optionality", "detail": "Future concession economics drives the trade.", "effect": "positive", "signal_label": "Positive", "weight": 2},
+        {"source": "lev_energy", "target": "sec_energy", "label": "Tariff and pricing reset", "detail": "Generators and energy names can see immediate derating risk.", "effect": "negative", "signal_label": "Negative", "weight": 3},
+        {"source": "lev_price", "target": "sec_food", "label": "Price cap versus margin", "detail": "Consumer relief may compress food and packaged-goods margin.", "effect": "negative", "signal_label": "Negative", "weight": 2},
+        {"source": "lev_price", "target": "sec_retail", "label": "Cost-of-living relief", "detail": "Lower prices can help traffic, but not every retailer wins equally.", "effect": "mixed", "signal_label": "Mixed", "weight": 1},
+        {"source": "lev_rural", "target": "sec_rural", "label": "Rural spending pulse", "detail": "Provincial retail and finance names react to cash entering the countryside.", "effect": "positive", "signal_label": "Positive", "weight": 2},
+        {"source": "lev_local", "target": "sec_construct", "label": "Local works and zoning", "detail": "Provincial projects and approvals can move materials demand.", "effect": "positive", "signal_label": "Positive", "weight": 2},
+        {"source": "lev_local", "target": "sec_industrial", "label": "Land-use approvals", "detail": "Estate and industrial land names care about zoning certainty.", "effect": "positive", "signal_label": "Positive", "weight": 2},
+        {"source": "lev_health", "target": "sec_hospital", "label": "Hospital tariff expectations", "detail": "Policy risk can rerate premium hospitals quickly.", "effect": "mixed", "signal_label": "Mixed", "weight": 2},
+        {"source": "lev_industry", "target": "sec_industrial", "label": "Factory permit pipeline", "detail": "Industrial and EV chains benefit when approvals speed up.", "effect": "positive", "signal_label": "Positive", "weight": 2},
+        {"source": "lev_tourism", "target": "sec_tourism", "label": "Visitor volume and spend", "detail": "Hotels, airports, airlines, and travel retail move together.", "effect": "positive", "signal_label": "Positive", "weight": 3},
+        {"source": "sec_bank", "target": "mk_domestic", "label": "Domestic liquidity narrative", "detail": "Credit expansion changes how the market prices local demand.", "effect": "mixed", "signal_label": "Mixed", "weight": 2},
+        {"source": "sec_retail", "target": "mk_domestic", "label": "Consumption trade", "detail": "Retail and property usually price stimulus fastest.", "effect": "positive", "signal_label": "Positive", "weight": 3},
+        {"source": "sec_construct", "target": "mk_rerate", "label": "Tender speculation", "detail": "The market often buys expectation before any contract signing.", "effect": "positive", "signal_label": "Positive", "weight": 3},
+        {"source": "sec_transport", "target": "mk_rerate", "label": "Concession rerating", "detail": "Transport concessions can command a premium on policy visibility.", "effect": "positive", "signal_label": "Positive", "weight": 2},
+        {"source": "sec_energy", "target": "mk_margin", "label": "Margin compression fear", "detail": "Popular price policy can still be bearish for producers.", "effect": "negative", "signal_label": "Negative", "weight": 3},
+        {"source": "sec_food", "target": "mk_margin", "label": "Margin and export squeeze", "detail": "Price caps and cost pressure rarely show up symmetrically.", "effect": "negative", "signal_label": "Negative", "weight": 2},
+        {"source": "sec_rural", "target": "mk_patronage", "label": "Provincial spending trade", "detail": "Budget flow and patronage strength shape local demand bets.", "effect": "positive", "signal_label": "Positive", "weight": 2},
+        {"source": "sec_industrial", "target": "mk_patronage", "label": "Approval network premium", "detail": "Investors price connectivity to industrial approvals and local power.", "effect": "mixed", "signal_label": "Mixed", "weight": 1},
+        {"source": "sec_hospital", "target": "mk_margin", "label": "Reimbursement risk", "detail": "Hospitals can derate if the state pushes harder on costs.", "effect": "mixed", "signal_label": "Mixed", "weight": 1},
+        {"source": "sec_tourism", "target": "mk_rerate", "label": "Tourism reopening premium", "detail": "Visitor growth usually becomes a clean narrative trade.", "effect": "positive", "signal_label": "Positive", "weight": 2},
+    ]
+
+    rows = [
+        {"Ministry": "Finance", "Lever": "Stimulus / Tax / Soft Loan", "Sector": "Banks / Finance; Retail / Property", "Signal": "Mixed to Positive", "Interpretation": "Consumption and liquidity rise, but debt relief can also pressure margins."},
+        {"Ministry": "Transport", "Lever": "Tender / Concession Pipeline", "Sector": "Contractors / Materials; Transport / Concessions", "Signal": "Positive", "Interpretation": "Bidding cadence and concession visibility often trigger speculation first."},
+        {"Ministry": "Energy", "Lever": "Power Tariff / Fuel Pricing", "Sector": "Power / Energy", "Signal": "Negative", "Interpretation": "Consumer-friendly tariff cuts can compress returns for listed operators."},
+        {"Ministry": "Commerce", "Lever": "Price Control / Export Push", "Sector": "Food / Exporters; Retail", "Signal": "Mixed", "Interpretation": "Cheaper staples may help traffic, but producers can see lower margin."},
+        {"Ministry": "Agriculture", "Lever": "Crop Support / Rural Income", "Sector": "Provincial Demand Plays", "Signal": "Positive", "Interpretation": "Rural cash flow tends to show up later in provincial retail and finance."},
+        {"Ministry": "Interior", "Lever": "Local Budget / Zoning", "Sector": "Contractors / Materials; Industrial Estate / EV Chain", "Signal": "Positive", "Interpretation": "Quiet approvals and local budgets can matter more than national headlines."},
+        {"Ministry": "Public Health", "Lever": "Reimbursement Rules", "Sector": "Hospitals", "Signal": "Mixed", "Interpretation": "Coverage changes can either expand demand or cut pricing power."},
+        {"Ministry": "Industry", "Lever": "BOI / EV / Permits", "Sector": "Industrial Estate / EV Chain", "Signal": "Positive", "Interpretation": "Approval speed drives land sales and supply-chain confidence."},
+        {"Ministry": "Tourism & Sports", "Lever": "Visa / Demand Activation", "Sector": "Hotels / Airports / Airlines", "Signal": "Positive", "Interpretation": "Tourism policy creates a direct top-line narrative for travel names."},
+    ]
+    return nodes, edges, pd.DataFrame(rows)
+
+
+def build_political_actor_network_payload() -> tuple[list[dict], list[dict], pd.DataFrame]:
+    nodes = [
+        {"id": "party_stimulus", "label": "Lead Party: Stimulus Bloc", "group": "party", "order": 1, "description": "Wins government formation and prioritizes consumption support."},
+        {"id": "party_province", "label": "Coalition: Provincial Network Bloc", "group": "party", "order": 2, "description": "Strong subnational machinery and local patronage channels."},
+        {"id": "party_deal", "label": "Coalition: Deal-Maker Bloc", "group": "party", "order": 3, "description": "Market reads this bloc through projects and business negotiation."},
+        {"id": "party_cost", "label": "Bloc: Cost-of-Living Enforcer", "group": "party", "order": 4, "description": "Frames policy around household relief and intervention."},
+        {"id": "party_tech", "label": "Bloc: Technocrat Wing", "group": "party", "order": 5, "description": "Less populist, more credibility-sensitive with investors."},
+        {"id": "min_pop", "label": "Minister Type: Populist", "group": "minister", "order": 1, "description": "Known for spending acceleration and retail-friendly policy."},
+        {"id": "min_net", "label": "Minister Type: Network Operator", "group": "minister", "order": 2, "description": "Strong in provincial execution and patronage coordination."},
+        {"id": "min_deal", "label": "Minister Type: Deal Maker", "group": "minister", "order": 3, "description": "Seen as able to push projects and negotiate concessions."},
+        {"id": "min_reg", "label": "Minister Type: Price Regulator", "group": "minister", "order": 4, "description": "Likely to favor consumers over producer margin."},
+        {"id": "min_tech", "label": "Minister Type: Technocrat", "group": "minister", "order": 5, "description": "Market prefers policy continuity and communication quality."},
+        {"id": "mof2", "label": "Finance", "group": "ministry", "order": 1, "description": "Broadest narrative impact across domestic sectors."},
+        {"id": "moi2", "label": "Interior / Agriculture", "group": "ministry", "order": 2, "description": "Combined local budget and rural-income channel."},
+        {"id": "mot2", "label": "Transport / Industry", "group": "ministry", "order": 3, "description": "Project pipeline and industrial build-out."},
+        {"id": "moe2", "label": "Energy / Commerce", "group": "ministry", "order": 4, "description": "The most common margin-compression policy path."},
+        {"id": "cred2", "label": "Finance / Energy Credibility", "group": "ministry", "order": 5, "description": "Where policy credibility most affects foreign positioning."},
+        {"id": "lev_cash", "label": "Cash Transfer / Tax Relief", "group": "lever", "order": 1, "description": "Front-loaded demand support."},
+        {"id": "lev_rural2", "label": "Local Budget / Crop Support", "group": "lever", "order": 2, "description": "Political capital turns into provincial demand."},
+        {"id": "lev_projects", "label": "Projects / Concessions", "group": "lever", "order": 3, "description": "Execution reputation matters more than ideology."},
+        {"id": "lev_caps", "label": "Tariff / Price Caps", "group": "lever", "order": 4, "description": "Cheap for households, expensive for operators."},
+        {"id": "lev_cred", "label": "Policy Signaling", "group": "lever", "order": 5, "description": "Investor comfort affects fund flow and multiples."},
+        {"id": "sec_domestic2", "label": "Retail / Finance / Property", "group": "sector", "order": 1, "description": "First beneficiaries of stimulus headlines."},
+        {"id": "sec_province2", "label": "Provincial Retail / Materials", "group": "sector", "order": 2, "description": "Wins when local budgets and crop income rise."},
+        {"id": "sec_project2", "label": "Contractors / Estates / Transport", "group": "sector", "order": 3, "description": "Sensitive to project continuity and concessions."},
+        {"id": "sec_margin2", "label": "Power / Energy / Food", "group": "sector", "order": 4, "description": "Most exposed to intervention risk."},
+        {"id": "sec_large2", "label": "SET50 Large Caps / FX", "group": "sector", "order": 5, "description": "Where foreign flow and credibility show up quickest."},
+        {"id": "mk_spec2", "label": "Speculative Rally", "group": "market", "order": 1, "description": "The market prices expected access before results arrive."},
+        {"id": "mk_derate2", "label": "Policy Derating", "group": "market", "order": 2, "description": "Intervention risk lowers multiples even before earnings change."},
+        {"id": "mk_flow2", "label": "Foreign-Flow Premium", "group": "market", "order": 3, "description": "Credibility and communication shape international positioning."},
+    ]
+
+    edges = [
+        {"source": "party_stimulus", "target": "min_pop", "label": "Stimulus bloc appoints populist", "detail": "The market expects faster spending than delivery.", "effect": "positive", "signal_label": "Positive", "weight": 3},
+        {"source": "party_province", "target": "min_net", "label": "Provincial bloc appoints network operator", "detail": "Execution is read through local influence, not speeches.", "effect": "structural", "signal_label": "Structural", "weight": 3},
+        {"source": "party_deal", "target": "min_deal", "label": "Deal-maker bloc appoints project negotiator", "detail": "Concession and industrial names usually react first.", "effect": "positive", "signal_label": "Positive", "weight": 2},
+        {"source": "party_cost", "target": "min_reg", "label": "Cost-of-living bloc appoints regulator", "detail": "Consumer relief increases fear of margin intervention.", "effect": "negative", "signal_label": "Negative", "weight": 3},
+        {"source": "party_tech", "target": "min_tech", "label": "Technocrat wing appoints credibility figure", "detail": "Foreign investors often price communication quality quickly.", "effect": "positive", "signal_label": "Positive", "weight": 2},
+        {"source": "min_pop", "target": "mof2", "label": "Populist usually matters most in Finance", "detail": "This is where spending becomes an investable domestic-demand theme.", "effect": "structural", "signal_label": "Structural", "weight": 3},
+        {"source": "min_net", "target": "moi2", "label": "Network operator often maps to local ministries", "detail": "Interior and agriculture transmit provincial power.", "effect": "structural", "signal_label": "Structural", "weight": 3},
+        {"source": "min_deal", "target": "mot2", "label": "Deal-maker maps to projects", "detail": "Transport and industry are the clearest execution ministries.", "effect": "positive", "signal_label": "Positive", "weight": 2},
+        {"source": "min_reg", "target": "moe2", "label": "Regulator maps to intervention ministries", "detail": "Energy and commerce hold the main price-control levers.", "effect": "negative", "signal_label": "Negative", "weight": 3},
+        {"source": "min_tech", "target": "cred2", "label": "Technocrat maps to credibility-sensitive posts", "detail": "This affects FX, rates narrative, and foreign flow.", "effect": "positive", "signal_label": "Positive", "weight": 2},
+        {"source": "mof2", "target": "lev_cash", "label": "Finance deploys transfers", "detail": "The market immediately prices consumption support.", "effect": "positive", "signal_label": "Positive", "weight": 3},
+        {"source": "moi2", "target": "lev_rural2", "label": "Local ministries deploy budgets", "detail": "Budgets and crop support translate into provincial momentum.", "effect": "positive", "signal_label": "Positive", "weight": 2},
+        {"source": "mot2", "target": "lev_projects", "label": "Project ministries control rollout", "detail": "Concession timing often matters more than project size.", "effect": "positive", "signal_label": "Positive", "weight": 2},
+        {"source": "moe2", "target": "lev_caps", "label": "Intervention ministries cap prices", "detail": "Great politics can still mean weaker listed-company returns.", "effect": "negative", "signal_label": "Negative", "weight": 3},
+        {"source": "cred2", "target": "lev_cred", "label": "Credibility ministries shape signaling", "detail": "A familiar, coherent minister can boost flow without changing fundamentals yet.", "effect": "positive", "signal_label": "Positive", "weight": 2},
+        {"source": "lev_cash", "target": "sec_domestic2", "label": "Stimulus lifts domestic plays", "detail": "Retail, finance, and property usually move first.", "effect": "positive", "signal_label": "Positive", "weight": 3},
+        {"source": "lev_rural2", "target": "sec_province2", "label": "Provincial cash flow lifts local demand", "detail": "The move often shows up outside Bangkok first.", "effect": "positive", "signal_label": "Positive", "weight": 2},
+        {"source": "lev_projects", "target": "sec_project2", "label": "Execution premium hits project names", "detail": "The trade follows expected access to state-led growth.", "effect": "positive", "signal_label": "Positive", "weight": 2},
+        {"source": "lev_caps", "target": "sec_margin2", "label": "Intervention hits margin sectors", "detail": "Power, energy, and food names derate on policy fear.", "effect": "negative", "signal_label": "Negative", "weight": 3},
+        {"source": "lev_cred", "target": "sec_large2", "label": "Credibility improves foreign comfort", "detail": "Large caps and FX-sensitive names absorb the flow signal first.", "effect": "positive", "signal_label": "Positive", "weight": 2},
+        {"source": "sec_domestic2", "target": "mk_spec2", "label": "Domestic demand rally", "detail": "Stimulus expectation becomes a speculation cycle.", "effect": "positive", "signal_label": "Positive", "weight": 3},
+        {"source": "sec_province2", "target": "mk_spec2", "label": "Provincial spending trade", "detail": "This is often about network strength more than macro data.", "effect": "positive", "signal_label": "Positive", "weight": 2},
+        {"source": "sec_project2", "target": "mk_spec2", "label": "Project access rally", "detail": "Investors often buy expected winners before official announcements.", "effect": "positive", "signal_label": "Positive", "weight": 2},
+        {"source": "sec_margin2", "target": "mk_derate2", "label": "Margin sectors derate", "detail": "Political popularity can coexist with a weaker multiple.", "effect": "negative", "signal_label": "Negative", "weight": 3},
+        {"source": "sec_large2", "target": "mk_flow2", "label": "Flow premium into large caps", "detail": "The market pays for credible policy signaling early.", "effect": "positive", "signal_label": "Positive", "weight": 2},
+    ]
+
+    rows = [
+        {"Political Archetype": "Stimulus Bloc -> Populist Finance Minister", "Likely Lever": "Cash Transfer / Tax Relief", "SET Exposure": "Retail / Finance / Property", "Signal": "Positive", "Interpretation": "The market usually buys domestic demand first and asks fiscal questions later."},
+        {"Political Archetype": "Provincial Network Bloc -> Network Operator", "Likely Lever": "Local Budget / Crop Support", "SET Exposure": "Provincial Retail / Materials", "Signal": "Positive", "Interpretation": "Strength comes from provincial execution and approvals, not ideology."},
+        {"Political Archetype": "Deal-Maker Bloc -> Project Negotiator", "Likely Lever": "Projects / Concessions", "SET Exposure": "Contractors / Estates / Transport", "Signal": "Positive", "Interpretation": "The trade is about project continuity and access to state-led deal flow."},
+        {"Political Archetype": "Cost-of-Living Bloc -> Price Regulator", "Likely Lever": "Tariff / Price Caps", "SET Exposure": "Power / Energy / Food", "Signal": "Negative", "Interpretation": "Household relief can still be bearish for producer and utility margins."},
+        {"Political Archetype": "Technocrat Wing -> Credibility Figure", "Likely Lever": "Policy Signaling", "SET Exposure": "SET50 Large Caps / FX", "Signal": "Positive", "Interpretation": "A coherent minister can improve foreign flow before any hard data changes."},
+    ]
+    return nodes, edges, pd.DataFrame(rows)
+
+
+def render_political_power_page() -> None:
+    st.title("Thai Political Power Network")
+    st.caption(
+        "Map political control to ministries, policy levers, and SET-sector reactions. "
+        "Read each graph from left to right; edge color shows the market signal the trade usually prices."
+    )
+
+    ministry_nodes, ministry_edges, ministry_table = build_ministry_network_payload()
+    actor_nodes, actor_edges, actor_table = build_political_actor_network_payload()
+
+    tab1, tab2 = st.tabs(
+        ["Ministries -> SET Sectors", "Parties / Minister Types -> Market Impact"]
+    )
+
+    with tab1:
+        st.plotly_chart(
+            build_layered_network_figure(
+                ministry_nodes,
+                ministry_edges,
+                "Ministry Control -> Policy Lever -> SET Sector",
+            ),
+            use_container_width=True,
+        )
+        st.dataframe(ministry_table, use_container_width=True, hide_index=True)
+
+    with tab2:
+        st.plotly_chart(
+            build_layered_network_figure(
+                actor_nodes,
+                actor_edges,
+                "Political Archetype -> Minister Type -> Market Signal",
+            ),
+            use_container_width=True,
+        )
+        st.dataframe(actor_table, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    st.markdown(
+        """
+**How to read it**
+
+- `Structural` edges show where political control actually sits.
+- `Positive` edges mark trades the market usually rewards on expectation.
+- `Negative` edges mark sectors that can derate when consumer-friendly intervention rises.
+- `Mixed` edges are where the same policy can help demand but hurt margin.
+        """
+    )
+
+
 def render_sidebar(df: pd.DataFrame, can_refresh: bool) -> dict:
     companies = sorted(df["symbol"].dropna().unique().tolist()) if not df.empty else []
     holder_options = []
@@ -1520,12 +1889,16 @@ def render_sidebar(df: pd.DataFrame, can_refresh: bool) -> dict:
         st.header("Navigation")
         page = st.radio(
             "เลือกหน้า",
-            options=["SET50 Shareholder Network", "Macro Factor Network"],
+            options=[
+                "SET50 Shareholder Network",
+                "Macro Factor Network",
+                "Political Power Network",
+            ],
             index=0,
             label_visibility="collapsed",
         )
         st.divider()
-        if page == "Macro Factor Network":
+        if page in {"Macro Factor Network", "Political Power Network"}:
             return {
                 "page": page,
                 "min_pct": 1.0, "selected_companies": [], "excluded_companies": [],
@@ -1611,6 +1984,9 @@ def main() -> None:
     # ── Route pages ───────────────────────────────────────────────────────────
     if controls["page"] == "Macro Factor Network":
         render_macro_network_page()
+        return
+    if controls["page"] == "Political Power Network":
+        render_political_power_page()
         return
 
     # ── SET50 Shareholder Network page ────────────────────────────────────────
