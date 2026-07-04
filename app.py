@@ -1824,18 +1824,209 @@ def build_political_actor_network_payload() -> tuple[list[dict], list[dict], pd.
     return nodes, edges, pd.DataFrame(rows)
 
 
+# ============================================================================
+# REAL RESEARCH DATA (Ministry Budget YoY% vs SET50 Stock Return, FY2559-2569)
+# Source: Bureau of the Budget (bb.go.th / govspending.data.go.th),
+#         SET official SET50 constituent lists, yfinance monthly closes,
+#         Cabinet minister & political party records (2559-2569)
+# ============================================================================
+REAL_MINISTRY_INFO = {
+    'กระทรวงการคลัง': {'id': 'finance', 'label_en': 'Finance', 'simple_r': 0.292, 'partial_r': 0.529},
+    'กระทรวงพลังงาน': {'id': 'energy', 'label_en': 'Energy', 'simple_r': 0.03, 'partial_r': 0.28},
+    'กระทรวงคมนาคม': {'id': 'transport', 'label_en': 'Transport', 'simple_r': 0.239, 'partial_r': 0.231},
+    'กระทรวงดิจิทัลเพื่อเศรษฐกิจและสังคม': {'id': 'digital_economy', 'label_en': 'Digital Economy', 'simple_r': 0.418, 'partial_r': 0.47},
+    'กระทรวงสาธารณสุข': {'id': 'public_health', 'label_en': 'Public Health', 'simple_r': 0.175, 'partial_r': 0.115},
+    'กระทรวงพาณิชย์': {'id': 'commerce', 'label_en': 'Commerce', 'simple_r': -0.602, 'partial_r': -0.774},
+    'กระทรวงเกษตรและสหกรณ์': {'id': 'agriculture', 'label_en': 'Agriculture', 'simple_r': -0.477, 'partial_r': -0.346},
+    'กระทรวงมหาดไทย': {'id': 'interior', 'label_en': 'Interior', 'simple_r': -0.196, 'partial_r': 0.032},
+    'กระทรวงอุตสาหกรรม': {'id': 'industry', 'label_en': 'Industry', 'simple_r': -0.007, 'partial_r': 0.056},
+    'กระทรวงการท่องเที่ยวและกีฬา': {'id': 'tourism_and_sports', 'label_en': 'Tourism & Sports', 'simple_r': -0.061, 'partial_r': 0.097},
+}
+
+REAL_MINISTRY_STOCK_EDGES = [
+    ('กระทรวงดิจิทัลเพื่อเศรษฐกิจและสังคม', 'ADVANC', 0.093),
+    ('กระทรวงดิจิทัลเพื่อเศรษฐกิจและสังคม', 'TRUE', 0.55),
+    ('กระทรวงคมนาคม', 'AOT', 0.415),
+    ('กระทรวงคมนาคม', 'BEM', 0.084),
+    ('กระทรวงคมนาคม', 'THAI', 0.004),
+    ('กระทรวงมหาดไทย', 'AWC', 0.1),
+    ('กระทรวงมหาดไทย', 'CPN', -0.228),
+    ('กระทรวงมหาดไทย', 'LH', -0.323),
+    ('กระทรวงมหาดไทย', 'SCC', -0.582),
+    ('กระทรวงมหาดไทย', 'SCGP', -0.37),
+    ('กระทรวงมหาดไทย', 'WHA', 0.403),
+    ('กระทรวงพลังงาน', 'BANPU', 0.204),
+    ('กระทรวงพลังงาน', 'BCP', 0.195),
+    ('กระทรวงพลังงาน', 'EGCO', 0.497),
+    ('กระทรวงพลังงาน', 'GPSC', -0.1),
+    ('กระทรวงพลังงาน', 'GULF', 0.0),
+    ('กระทรวงพลังงาน', 'IVL', -0.268),
+    ('กระทรวงพลังงาน', 'OR', 0.146),
+    ('กระทรวงพลังงาน', 'PTT', -0.597),
+    ('กระทรวงพลังงาน', 'PTTEP', 0.789),
+    ('กระทรวงพลังงาน', 'PTTGC', -0.458),
+    ('กระทรวงพลังงาน', 'RATCH', 0.315),
+    ('กระทรวงพลังงาน', 'TOP', -0.054),
+    ('กระทรวงการคลัง', 'BBL', 0.38),
+    ('กระทรวงการคลัง', 'KBANK', 0.581),
+    ('กระทรวงการคลัง', 'KKP', 0.345),
+    ('กระทรวงการคลัง', 'KTB', 0.356),
+    ('กระทรวงการคลัง', 'KTC', -0.501),
+    ('กระทรวงการคลัง', 'MTC', -0.127),
+    ('กระทรวงการคลัง', 'SCB', 0.629),
+    ('กระทรวงการคลัง', 'TCAP', 0.19),
+    ('กระทรวงการคลัง', 'TIDLOR', 0.0),
+    ('กระทรวงการคลัง', 'TISCO', 0.124),
+    ('กระทรวงการคลัง', 'TLI', 0.441),
+    ('กระทรวงการคลัง', 'TTB', 0.112),
+    ('กระทรวงสาธารณสุข', 'BDMS', 0.086),
+    ('กระทรวงสาธารณสุข', 'BH', 0.212),
+    ('กระทรวงพาณิชย์', 'BJC', -0.402),
+    ('กระทรวงพาณิชย์', 'COM7', -0.406),
+    ('กระทรวงพาณิชย์', 'CPALL', -0.4),
+    ('กระทรวงพาณิชย์', 'CRC', -0.631),
+    ('กระทรวงพาณิชย์', 'HMPRO', -0.583),
+    ('กระทรวงพาณิชย์', 'MRDIYT', 0.0),
+    ('กระทรวงอุตสาหกรรม', 'CCET', -0.065),
+    ('กระทรวงอุตสาหกรรม', 'DELTA', 0.017),
+    ('กระทรวงเกษตรและสหกรณ์', 'CPF', -0.313),
+    ('กระทรวงเกษตรและสหกรณ์', 'OSP', -0.493),
+    ('กระทรวงเกษตรและสหกรณ์', 'TFG', -0.343),
+    ('กระทรวงเกษตรและสหกรณ์', 'TU', 0.022),
+    ('กระทรวงการท่องเที่ยวและกีฬา', 'MINT', -0.061),
+]
+
+# Current cabinet (2568-2569): real minister -> real ministry -> real party
+REAL_CURRENT_CABINET = [
+    {'minister': 'นายเอกนิติ นิติทัณฑ์ประภาศ', 'ministry': 'กระทรวงการคลัง', 'party': 'ภูมิใจไทย / โควตากลาง'},
+    {'minister': 'นายสุรศักดิ์ พันธ์เจริญวรกุล', 'ministry': 'กระทรวงการท่องเที่ยวและกีฬา', 'party': 'ภูมิใจไทย'},
+    {'minister': 'นายพิพัฒน์ รัชกิจประการ', 'ministry': 'กระทรวงคมนาคม', 'party': 'ภูมิใจไทย'},
+    {'minister': 'นายไชยชนก ชิดชอบ', 'ministry': 'กระทรวงดิจิทัลเพื่อเศรษฐกิจและสังคม', 'party': 'ภูมิใจไทย'},
+    {'minister': 'นายเอกนัฏ พร้อมพันธุ์', 'ministry': 'กระทรวงพลังงาน', 'party': 'ภูมิใจไทยประสาน'},
+    {'minister': 'นางศุภจี สุธรรมพันธุ์', 'ministry': 'กระทรวงพาณิชย์', 'party': 'ผู้ทรงคุณวุฒิเอกชน / อิสระ'},
+    {'minister': 'นายอนุทิน ชาญวีรกูล', 'ministry': 'กระทรวงมหาดไทย', 'party': 'ควบตำแหน่ง / ภูมิใจไทย'},
+    {'minister': 'นายพัฒนา พร้อมพัฒน์', 'ministry': 'กระทรวงสาธารณสุข', 'party': 'กลุ่มร่วมรัฐบาล / พปชร.เดิม'},
+    {'minister': 'นายวราวุธ ศิลปอาชา', 'ministry': 'กระทรวงอุตสาหกรรม', 'party': 'ภูมิใจไทย'},
+]
+
+# Network centrality results (from the ministry-stock bipartite network, N=60 nodes, 50 edges)
+REAL_CENTRALITY_TABLE = pd.DataFrame([
+    {"Node": "Finance (การคลัง)", "Type": "Ministry", "Weighted Degree": 3.787, "Betweenness": 0.0418},
+    {"Node": "Energy (พลังงาน)", "Type": "Ministry", "Weighted Degree": 3.622, "Betweenness": 0.0418},
+    {"Node": "Commerce (พาณิชย์)", "Type": "Ministry", "Weighted Degree": 2.421, "Betweenness": 0.0102},
+    {"Node": "Interior (มหาดไทย)", "Type": "Ministry", "Weighted Degree": 2.006, "Betweenness": 0.0088},
+    {"Node": "Agriculture (เกษตรฯ)", "Type": "Ministry", "Weighted Degree": 1.171, "Betweenness": 0.0035},
+    {"Node": "PTTEP", "Type": "Stock", "Weighted Degree": 0.789, "Betweenness": 0.0},
+    {"Node": "Digital Economy (ดิจิทัลฯ)", "Type": "Ministry", "Weighted Degree": 0.644, "Betweenness": 0.0006},
+    {"Node": "CRC", "Type": "Stock", "Weighted Degree": 0.631, "Betweenness": 0.0},
+    {"Node": "SCB", "Type": "Stock", "Weighted Degree": 0.629, "Betweenness": 0.0},
+])
+
+# Simple vs Partial correlation table (controlling for SET50 average market return)
+REAL_CORRELATION_TABLE = pd.DataFrame([
+    {"Ministry": info["label_en"], "Simple r (YoY budget vs stock return)": info["simple_r"],
+     "Partial r (controlling market)": info["partial_r"]}
+    for info in REAL_MINISTRY_INFO.values()
+]).sort_values("Partial r (controlling market)", ascending=False)
+
+
+def build_real_ministry_stock_network_payload() -> "tuple[list[dict], list[dict], pd.DataFrame]":
+    """Ministry -> SET50 Stock layer, using REAL correlation values computed from
+    FY2559-2569 budget data and 10-year SET50 monthly returns (not illustrative)."""
+    nodes: list[dict] = []
+    for i, (th_name, info) in enumerate(REAL_MINISTRY_INFO.items()):
+        nodes.append({
+            "id": info["id"], "label": info["label_en"], "group": "ministry", "order": i + 1,
+            "description": (
+                f"Simple r = {info['simple_r']:+.2f}, Partial r (controlling SET50 market return) = "
+                f"{info['partial_r']:+.2f}. Based on FY2559-2569 budget YoY% vs linked stock returns."
+            ),
+        })
+    stock_order: dict[str, int] = {}
+    for th_name, ticker, r in REAL_MINISTRY_STOCK_EDGES:
+        if ticker not in stock_order:
+            stock_order[ticker] = len(stock_order) + 1
+        nodes.append({
+            "id": f"stock_{ticker}", "label": ticker, "group": "sector", "order": stock_order[ticker],
+            "description": f"Linked to {REAL_MINISTRY_INFO[th_name]['label_en']}. Correlation with that ministry's budget YoY% = {r:+.2f}.",
+        })
+
+    edges: list[dict] = []
+    for th_name, ticker, r in REAL_MINISTRY_STOCK_EDGES:
+        info = REAL_MINISTRY_INFO[th_name]
+        effect = "positive" if r > 0.05 else ("negative" if r < -0.05 else "mixed")
+        edges.append({
+            "source": info["id"], "target": f"stock_{ticker}",
+            "label": f"{info['label_en']} \u2194 {ticker}",
+            "detail": f"Correlation between {info['label_en']} budget YoY% and {ticker} annual return, FY2559-2569 (n=10 years).",
+            "effect": effect, "signal_label": f"r = {r:+.2f}",
+            "weight": max(abs(r) * 3, 0.4),
+        })
+
+    table = REAL_CORRELATION_TABLE.copy()
+    return nodes, edges, table
+
+
+def build_real_political_actor_network_payload() -> "tuple[list[dict], list[dict], pd.DataFrame]":
+    """Party -> Minister -> Ministry layer using the REAL current cabinet (2568-2569)."""
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    party_ids: dict[str, str] = {}
+    minister_ids: dict[str, str] = {}
+
+    for i, row in enumerate(REAL_CURRENT_CABINET):
+        party = row["party"]
+        minister = row["minister"]
+        ministry_th = row["ministry"]
+        info = REAL_MINISTRY_INFO.get(ministry_th)
+        if info is None:
+            continue  # e.g. Agriculture minister missing from current-cabinet source data
+
+        if party not in party_ids:
+            pid = f"party_{len(party_ids)}"
+            party_ids[party] = pid
+            nodes.append({"id": pid, "label": party, "group": "party", "order": len(party_ids),
+                          "description": "Political party / background of the minister currently holding this post."})
+        if minister not in minister_ids:
+            mid = f"minister_{len(minister_ids)}"
+            minister_ids[minister] = mid
+            nodes.append({"id": mid, "label": minister, "group": "minister", "order": len(minister_ids),
+                          "description": f"Current minister, {info['label_en']} (Cabinet 2568-2569)."})
+
+        ministry_node_id = f"actor_ministry_{info['id']}"
+        if not any(n["id"] == ministry_node_id for n in nodes):
+            nodes.append({"id": ministry_node_id, "label": info["label_en"], "group": "ministry",
+                          "order": len(REAL_MINISTRY_INFO) - list(REAL_MINISTRY_INFO.values()).index(info),
+                          "description": f"Partial r with linked SET50 stocks = {info['partial_r']:+.2f}."})
+
+        edges.append({"source": party_ids[party], "target": minister_ids[minister],
+                      "label": f"{party} \u2192 {minister}", "detail": "Real party affiliation, current cabinet.",
+                      "effect": "structural", "signal_label": "Structural", "weight": 2})
+        edges.append({"source": minister_ids[minister], "target": ministry_node_id,
+                      "label": f"{minister} \u2192 {info['label_en']}", "detail": "Current real appointment (Cabinet 2568-2569).",
+                      "effect": "positive" if info["partial_r"] > 0 else "negative",
+                      "signal_label": f"Ministry partial r = {info['partial_r']:+.2f}", "weight": 2})
+
+    table = pd.DataFrame([
+        {"Minister": row["minister"], "Ministry": REAL_MINISTRY_INFO[row["ministry"]]["label_en"],
+         "Party": row["party"], "Partial r": REAL_MINISTRY_INFO[row["ministry"]]["partial_r"]}
+        for row in REAL_CURRENT_CABINET if row["ministry"] in REAL_MINISTRY_INFO
+    ])
+    return nodes, edges, table
+
+
 def render_political_power_page() -> None:
     st.title("Thai Political Power Network")
     st.caption(
-        "Map political control to ministries, policy levers, and SET-sector reactions. "
-        "Read each graph from left to right; edge color shows the market signal the trade usually prices."
+        "Real data from this research: FY2559-2569 ministry budget YoY% vs. SET50 stock returns, "
+        "the current cabinet (2568-2569), and graph-theory network metrics. Not illustrative examples."
     )
 
-    ministry_nodes, ministry_edges, ministry_table = build_ministry_network_payload()
-    actor_nodes, actor_edges, actor_table = build_political_actor_network_payload()
+    ministry_nodes, ministry_edges, ministry_table = build_real_ministry_stock_network_payload()
+    actor_nodes, actor_edges, actor_table = build_real_political_actor_network_payload()
 
-    tab1, tab2 = st.tabs(
-        ["Ministries -> SET Sectors", "Parties / Minister Types -> Market Impact"]
+    tab1, tab2, tab3 = st.tabs(
+        ["Ministry -> SET50 Stocks (real r)", "Party -> Minister -> Ministry (current cabinet)", "Research Results & Graph Theory"]
     )
 
     with tab1:
@@ -1843,10 +2034,11 @@ def render_political_power_page() -> None:
             build_layered_network_figure(
                 ministry_nodes,
                 ministry_edges,
-                "Ministry Control -> Policy Lever -> SET Sector",
+                "Ministry -> SET50 Stock (edge label = real correlation r, FY2559-2569)",
             ),
             use_container_width=True,
         )
+        st.caption("Edge color: green = positive correlation, red = negative, gray = near zero (|r| < 0.05).")
         st.dataframe(ministry_table, use_container_width=True, hide_index=True)
 
     with tab2:
@@ -1854,23 +2046,64 @@ def render_political_power_page() -> None:
             build_layered_network_figure(
                 actor_nodes,
                 actor_edges,
-                "Political Archetype -> Minister Type -> Market Signal",
+                "Real Party -> Real Minister -> Ministry (Cabinet 2568-2569)",
             ),
             use_container_width=True,
         )
+        st.caption(
+            "Built from the uploaded Minister-Ministry-Party edge list. Agriculture is omitted here because "
+            "the source data has no listed minister for the current cabinet."
+        )
         st.dataframe(actor_table, use_container_width=True, hide_index=True)
+
+    with tab3:
+        st.subheader("All computed values")
+        st.markdown("**Simple vs. Partial Correlation** (partial correlation controls for SET50's average annual "
+                     "return as a market-wide proxy, removing the effect of general market movement):")
+        st.dataframe(REAL_CORRELATION_TABLE, use_container_width=True, hide_index=True)
+
+        st.markdown("**Network Centrality** (bipartite ministry-stock network, 60 nodes, 50 edges):")
+        st.dataframe(REAL_CENTRALITY_TABLE, use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+        st.subheader("Graph theory concepts used in this analysis")
+        st.markdown(
+            """
+- **Bipartite network** — two disjoint node types (ministries and stocks) where edges only connect across
+  types, never within the same type. This is the base structure of the entire analysis.
+- **Weighted graph** — each edge carries a weight (here, `|correlation|`) rather than a simple yes/no connection,
+  so stronger relationships pull more visual and analytical weight.
+- **Degree centrality** — the (normalized) number of edges a node has; identifies broadly-connected ministries.
+- **Weighted degree** — the sum of edge weights at a node; Finance and Energy rank highest (3.79, 3.62) because
+  they connect to the most stocks *and* those links carry above-average correlation weight.
+- **Betweenness centrality** — how often a node lies on the shortest path between other node pairs; Finance and
+  Energy are also the top bridges in this network, meaning removing either would fragment the ministry-stock
+  structure the most.
+- **One-mode projection** — collapsing a bipartite graph onto a single node type. A naive shared-neighbor
+  projection produces zero edges here (each stock maps to exactly one ministry), so this study instead builds
+  projections from the *time-series correlation* between ministries'/stocks' return series (co-movement),
+  which is the methodologically appropriate substitute for this data structure.
+- **Community detection (greedy modularity)** — applied to the bipartite graph; each detected community turned
+  out to be exactly one ministry plus its own linked stocks, a direct artifact of the 1-ministry-per-stock
+  mapping rather than a meaningful economic clustering.
+- **Multi-mode (k-partite) network** — the Party -> Minister -> Ministry -> Stock structure combines three-plus
+  node types in one graph, extending the base bipartite model to trace individual political actors, not just
+  institutions.
+            """
+        )
 
     st.markdown("---")
     st.markdown(
         """
-**How to read it**
+**How to read the network graphs above**
 
-- `Structural` edges show where political control actually sits.
-- `Positive` edges mark trades the market usually rewards on expectation.
-- `Negative` edges mark sectors that can derate when consumer-friendly intervention rises.
-- `Mixed` edges are where the same policy can help demand but hurt margin.
+- Edge labels show the actual computed correlation (`r = ...`), not a qualitative guess.
+- Green edges = positive correlation (budget growth co-moves with stock gains).
+- Red edges = negative correlation (often counter-cyclical subsidy spending).
+- Gray/neutral edges = correlation close to zero (|r| < 0.05).
         """
     )
+
 
 
 def render_sidebar(df: pd.DataFrame, can_refresh: bool) -> dict:
