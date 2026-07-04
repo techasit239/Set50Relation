@@ -2015,6 +2015,230 @@ def build_real_political_actor_network_payload() -> "tuple[list[dict], list[dict
     return nodes, edges, table
 
 
+def build_free_network_html(nodes: list[dict], edges: list[dict], height: int = 720) -> str:
+    """Self-contained draggable + click-to-highlight force network (canvas-based),
+    matching the visual style of the macro-factor network page. Used for the
+    Political Power Network graphs (real research data)."""
+
+    group_color = {
+        "party": "#2563eb", "minister": "#7c3aed", "ministry": "#f59e0b",
+        "sector": "#22c55e", "lever": "#14b8a6", "market": "#f43f5e",
+    }
+    effect_color = {
+        "positive": "#34d399", "negative": "#fb7185", "mixed": "#94a3b8", "structural": "#60a5fa",
+    }
+    group_radius = {"party": 20, "minister": 17, "ministry": 24, "sector": 13, "lever": 16, "market": 18}
+    layer_label = {
+        "party": "Party", "minister": "Minister", "ministry": "Ministry",
+        "sector": "Stock", "lever": "Policy Lever", "market": "Market Effect",
+    }
+
+    groups_present = sorted({n["group"] for n in nodes}, key=lambda g: list(group_color).index(g) if g in group_color else 99)
+
+    js_nodes = []
+    for n in nodes:
+        js_nodes.append({
+            "id": n["id"], "label": n["label"], "group": n["group"],
+            "r": group_radius.get(n["group"], 15),
+            "desc": n.get("description", ""),
+        })
+    js_edges = []
+    for e in edges:
+        js_edges.append({
+            "source": e["source"], "target": e["target"],
+            "label": e.get("label", ""), "detail": e.get("detail", ""),
+            "effect": e.get("effect", "mixed"),
+            "signal": e.get("signal_label", e.get("effect", "mixed")),
+            "weight": e.get("weight", 1),
+        })
+
+    nodes_json = json.dumps(js_nodes, ensure_ascii=False)
+    edges_json = json.dumps(js_edges, ensure_ascii=False)
+    group_color_json = json.dumps(group_color)
+    effect_color_json = json.dumps(effect_color)
+    layer_label_json = json.dumps(layer_label, ensure_ascii=False)
+    groups_present_json = json.dumps(groups_present)
+
+    legend_items_html = "".join(
+        f'<div class="li"><div class="ld" style="background:{group_color.get(g, "#94a3b8")}"></div>{layer_label.get(g, g)}</div>'
+        for g in groups_present
+    )
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<style>
+  *{{box-sizing:border-box;margin:0;padding:0}}
+  body{{background:#111827;color:#f1f5f9;font-family:system-ui,sans-serif;overflow:hidden}}
+  canvas{{display:block;cursor:grab}}
+  #tt{{position:fixed;background:#1f2937;border:1px solid #374151;border-radius:8px;
+      padding:10px 14px;font-size:13px;pointer-events:none;display:none;max-width:280px;
+      z-index:100;line-height:1.5}}
+  #tt .tn{{font-weight:700;font-size:14px;margin-bottom:3px}}
+  #tt .tc{{font-size:11px;opacity:.6;margin-bottom:5px;text-transform:uppercase;letter-spacing:.05em}}
+  #leg{{position:fixed;bottom:14px;left:14px;background:#1f2937;border:1px solid #374151;
+       border-radius:8px;padding:10px 14px;font-size:12px;z-index:100}}
+  .lt{{font-weight:600;margin-bottom:7px;opacity:.6;font-size:11px;text-transform:uppercase}}
+  .li{{display:flex;align-items:center;gap:7px;margin-bottom:4px}}
+  .ld{{width:10px;height:10px;border-radius:50%;flex-shrink:0}}
+  #leg2{{position:fixed;bottom:14px;right:14px;background:#1f2937;border:1px solid #374151;
+        border-radius:8px;padding:10px 14px;font-size:12px;z-index:100}}
+  .ll{{width:26px;height:3px;border-radius:2px;flex-shrink:0}}
+  #hint{{position:fixed;top:12px;left:50%;transform:translateX(-50%);
+        background:#1f2937;border:1px solid #374151;border-radius:20px;
+        padding:5px 14px;font-size:12px;opacity:.7;pointer-events:none;white-space:nowrap}}
+</style>
+</head>
+<body>
+<div id="hint">คลิกที่โหนดเพื่อไฮไลท์เส้นเชื่อม · ลากโหนดได้อิสระ · คลิกที่ว่างเพื่อยกเลิก</div>
+<canvas id="c"></canvas>
+<div id="tt"></div>
+<div id="leg"><div class="lt">Node type</div>{legend_items_html}</div>
+<div id="leg2">
+  <div class="lt">Correlation sign</div>
+  <div class="li"><div class="ll" style="background:#34d399"></div>Positive</div>
+  <div class="li"><div class="ll" style="background:#fb7185"></div>Negative</div>
+  <div class="li"><div class="ll" style="background:#94a3b8"></div>Mixed / structural</div>
+</div>
+<script>
+const C=document.getElementById('c'),ctx=C.getContext('2d');
+let W,H;
+function resize(){{W=C.width=window.innerWidth;H=C.height=window.innerHeight}}
+resize();window.addEventListener('resize',resize);
+
+const groupColor={group_color_json};
+const effectColor={effect_color_json};
+const layerLabel={layer_label_json};
+const groupsPresent={groups_present_json};
+
+const rawNodes={nodes_json};
+const rawEdges={edges_json};
+
+const nodes=rawNodes.map(n=>({{...n,x:0,y:0,vx:0,vy:0}}));
+const nm={{}};nodes.forEach(n=>nm[n.id]=n);
+const edges=rawEdges.filter(e=>nm[e.source]&&nm[e.target]);
+
+function initPos(){{
+  const angleStep=(Math.PI*2)/Math.max(groupsPresent.length,1);
+  groupsPresent.forEach((g,gi)=>{{
+    const groupNodes=nodes.filter(n=>n.group===g);
+    const baseAngle=gi*angleStep;
+    const ringR=groupNodes.length>1?260:0;
+    groupNodes.forEach((n,i)=>{{
+      const a=baseAngle+(i-(groupNodes.length-1)/2)*0.14;
+      const r=180+ (gi%2)*90 + (i%3)*40;
+      n.x=Math.cos(a)*r*1.4; n.y=Math.sin(a)*r*1.4;
+    }});
+  }});
+}}
+initPos();
+
+let selected=null, hov=null, drag=null, ox=0, oy=0, iter=0;
+
+function sim(){{
+  nodes.forEach(a=>{{
+    let fx=-a.x*0.012, fy=-a.y*0.012;
+    nodes.forEach(b=>{{
+      if(a===b)return;
+      const dx=a.x-b.x, dy=a.y-b.y, d=Math.sqrt(dx*dx+dy*dy)||1;
+      const f=2600/(d*d); fx+=(dx/d)*f; fy+=(dy/d)*f;
+    }});
+    edges.forEach(e=>{{
+      const other=e.source===a.id?nm[e.target]:e.target===a.id?nm[e.source]:null;
+      if(!other)return;
+      const dx=other.x-a.x, dy=other.y-a.y, d=Math.sqrt(dx*dx+dy*dy)||1;
+      const ideal=150;
+      const f=(d-ideal)*0.028; fx+=(dx/d)*f; fy+=(dy/d)*f;
+    }});
+    if(a!==drag){{ a.vx=(a.vx+fx)*0.8; a.vy=(a.vy+fy)*0.8; a.x+=a.vx; a.y+=a.vy; }}
+  }});
+}}
+
+function nodeAt(mx,my){{
+  const wx=mx-W/2, wy=my-H/2;
+  for(let i=nodes.length-1;i>=0;i--){{
+    const n=nodes[i];
+    if(Math.hypot(n.x-wx,n.y-wy)<n.r+6) return n;
+  }}
+  return null;
+}}
+
+C.addEventListener('mousedown',e=>{{
+  const n=nodeAt(e.clientX,e.clientY);
+  if(n){{ drag=n; ox=e.clientX-n.x-W/2; oy=e.clientY-n.y-H/2; }}
+}});
+C.addEventListener('mousemove',e=>{{
+  if(drag){{ drag.x=e.clientX-ox-W/2; drag.y=e.clientY-oy-H/2; drag.vx=0; drag.vy=0; }}
+  hov=nodeAt(e.clientX,e.clientY);
+  const tt=document.getElementById('tt');
+  if(hov){{
+    tt.style.display='block';
+    tt.style.left=(e.clientX+16)+'px'; tt.style.top=(e.clientY-10)+'px';
+    tt.innerHTML='<div class="tn">'+hov.label+'</div>'
+      +'<div class="tc" style="color:'+(groupColor[hov.group]||'#94a3b8')+'">'+(layerLabel[hov.group]||hov.group)+'</div>'
+      +'<div>'+hov.desc+'</div>';
+  }} else {{ tt.style.display='none'; }}
+}});
+C.addEventListener('mouseup',e=>{{
+  const moved = drag && (Math.abs(e.clientX-ox-W/2-drag.x)>2);
+  drag=null;
+}});
+C.addEventListener('click',e=>{{
+  const n=nodeAt(e.clientX,e.clientY);
+  selected = (n && selected===n) ? null : n;
+}});
+
+function ecol(effect){{return effectColor[effect]||'#94a3b8';}}
+
+function draw(){{
+  ctx.clearRect(0,0,W,H);
+  ctx.save(); ctx.translate(W/2,H/2);
+
+  edges.forEach(e=>{{
+    const na=nm[e.source], nb=nm[e.target];
+    if(!na||!nb)return;
+    const connectedToSelected = selected && (na.id===selected.id || nb.id===selected.id);
+    const dim = selected && !connectedToSelected;
+    ctx.beginPath(); ctx.moveTo(na.x,na.y); ctx.lineTo(nb.x,nb.y);
+    ctx.strokeStyle=ecol(e.effect);
+    ctx.globalAlpha = dim ? 0.06 : (connectedToSelected ? 0.95 : 0.35);
+    ctx.lineWidth = connectedToSelected ? Math.max(2, e.weight*1.8) : Math.max(1, e.weight);
+    ctx.stroke(); ctx.globalAlpha=1;
+  }});
+
+  nodes.forEach(n=>{{
+    const col=groupColor[n.group]||'#94a3b8';
+    const isSelected = selected && selected.id===n.id;
+    const isNeighbor = selected && edges.some(e=>(e.source===selected.id&&e.target===n.id)||(e.target===selected.id&&e.source===n.id));
+    const dim = selected && !isSelected && !isNeighbor;
+    ctx.globalAlpha = dim ? 0.25 : 1;
+    if(isSelected || isNeighbor){{
+      ctx.beginPath(); ctx.arc(n.x,n.y,n.r+7,0,Math.PI*2); ctx.fillStyle=col+'33'; ctx.fill();
+    }}
+    ctx.beginPath(); ctx.arc(n.x,n.y,n.r,0,Math.PI*2);
+    ctx.fillStyle = col + (isSelected?'ff':'aa');
+    ctx.strokeStyle = isSelected ? '#ffffff' : col;
+    ctx.lineWidth = isSelected ? 3 : 1.5;
+    ctx.fill(); ctx.stroke();
+
+    ctx.fillStyle = isSelected ? '#111827' : '#f1f5f9';
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.font = (isSelected?'700 ':'500 ') + Math.min(12, n.r*0.7) + 'px system-ui';
+    ctx.fillText(n.label.length>14 ? n.label.slice(0,13)+'\\u2026' : n.label, n.x, n.y+n.r+11);
+    ctx.globalAlpha=1;
+  }});
+
+  ctx.restore();
+}}
+
+function loop(){{ if(iter<260){{sim();iter++;}} draw(); requestAnimationFrame(loop); }}
+loop();
+</script>
+</body>
+</html>"""
+    return html
+
+
 def render_political_power_page() -> None:
     st.title("Thai Political Power Network")
     st.caption(
@@ -2030,25 +2254,17 @@ def render_political_power_page() -> None:
     )
 
     with tab1:
-        st.plotly_chart(
-            build_layered_network_figure(
-                ministry_nodes,
-                ministry_edges,
-                "Ministry -> SET50 Stock (edge label = real correlation r, FY2559-2569)",
-            ),
-            use_container_width=True,
+        components.html(
+            build_free_network_html(ministry_nodes, ministry_edges, height=720),
+            height=720, scrolling=False,
         )
         st.caption("Edge color: green = positive correlation, red = negative, gray = near zero (|r| < 0.05).")
         st.dataframe(ministry_table, use_container_width=True, hide_index=True)
 
     with tab2:
-        st.plotly_chart(
-            build_layered_network_figure(
-                actor_nodes,
-                actor_edges,
-                "Real Party -> Real Minister -> Ministry (Cabinet 2568-2569)",
-            ),
-            use_container_width=True,
+        components.html(
+            build_free_network_html(actor_nodes, actor_edges, height=720),
+            height=720, scrolling=False,
         )
         st.caption(
             "Built from the uploaded Minister-Ministry-Party edge list. Agriculture is omitted here because "
