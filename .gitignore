@@ -1,0 +1,16 @@
+.env
+*/.env
+**/.env
+
+__pycache__/
+*.pyc
+
+# large generated data, not meant for git
+Neo4j GDS/quotes_domain_network/domain_edges_raw.csv
+Neo4j GDS/quotes_domain_network/domain_nodes_raw.csv
+Neo4j GDS/quotes_domain_network/build_log.txt
+Neo4j GDS/neo4j-import/domain_edges.csv
+Neo4j GDS/neo4j-import/domain_nodes.csv
+
+# neo4j docker data volume (if bind-mounted locally)
+Neo4j GDS/neo4j-data/
