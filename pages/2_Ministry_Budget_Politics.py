@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 
 DATA_DIR = Path(__file__).parent.parent / "Neo4j GDS" / "stock_return_baseline"
+sys.path.insert(0, str(DATA_DIR))
 
 MINISTRY_LABEL_EN = {
     "กระทรวงการคลัง": "Finance",
@@ -42,6 +45,12 @@ def load_data():
     budget["ministry_en"] = budget["min_name"].map(MINISTRY_LABEL_EN)
     cabinet["ministry_en"] = cabinet["ministry"].map(MINISTRY_LABEL_EN)
     return cabinet, budget, correlation, party_summary, model_comparison, minister_net
+
+
+@st.cache_data
+def load_interactive_network_html() -> str:
+    from minister_network_pyvis import build_minister_network_html
+    return build_minister_network_html()
 
 
 def main() -> None:
@@ -143,14 +152,25 @@ def main() -> None:
 
     with tab4:
         st.subheader("Minister career-movement network (2014-2026)")
-        png_path = DATA_DIR / "minister_network.png"
-        if png_path.exists():
-            st.image(str(png_path), use_container_width=True)
         st.caption(
             "Tripartite Minister-Ministry-Stock graph. Node size = betweenness centrality - "
             "ministers who held multiple ministries act as structural bridges, regardless of how "
-            "long they served."
+            "long they served. Drag nodes to rearrange, click a node to highlight only its "
+            "connections and see details in the side panel."
         )
+        try:
+            network_html = load_interactive_network_html()
+        except Exception as exc:
+            st.error(f"Could not build interactive network: {exc}")
+            network_html = None
+        if network_html:
+            components.html(network_html, height=820, scrolling=False)
+
+        png_path = DATA_DIR / "minister_network.png"
+        if png_path.exists():
+            with st.expander("Static version (for reports/printing)"):
+                st.image(str(png_path), use_container_width=True)
+
         top_ministers = (
             minister_net[minister_net["node_type"] == "minister"]
             .sort_values("betweenness", ascending=False)
