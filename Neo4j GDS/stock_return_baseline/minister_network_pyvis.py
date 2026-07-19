@@ -23,7 +23,7 @@ from pyvis.network import Network
 
 from build_minister_network import build_graph, parse_be_date
 from ministry_stock_data import REAL_MINISTRY_INFO
-from visualize_minister_network import radial_layout
+from minister_network_layout import radial_layout
 
 HERE = Path(__file__).parent
 CABINET_CSV = HERE / "cabinet_history.csv"
